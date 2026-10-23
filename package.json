@@ -5,7 +5,8 @@
   "description": "Multi-user backend: accounts, per-user Gemini keys, real photo analysis, listing generation, on-device storage",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/smoke.mjs"
   },
   "engines": {
     "node": ">=18"

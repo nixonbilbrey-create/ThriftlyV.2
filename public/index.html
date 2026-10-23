@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Thriftly backend — test harness</title>
+<title>Thriftly — snap it, price it, list it</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%8D%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <style>
   body{font-family:system-ui,-apple-system,sans-serif;max-width:780px;margin:32px auto;padding:0 20px;color:#1c1a17;}
   h1{font-size:18px;margin:0 0 4px;}
@@ -43,17 +44,22 @@
   a.link{color:#1c1a17;}
   pre{background:#f4f2ed;padding:10px;border-radius:8px;white-space:pre-wrap;font-size:11.5px;}
   #hidden{display:none;}
+  /* skeleton loaders: shimmer placeholders shown wherever data is mid-flight */
+  @keyframes shimmer{0%{background-position:-400px 0;}100%{background-position:400px 0;}}
+  .skeleton{background:linear-gradient(90deg,#eceae4 25%,#f6f4ee 40%,#eceae4 55%);background-size:400px 100%;animation:shimmer 1.2s linear infinite;border-radius:6px;height:12px;}
+  .sk-line{margin:8px 0;}
+  .sk-line.short{width:55%;}
 </style>
 </head>
 <body>
-  <h1>Thriftly backend — test harness</h1>
-  <p class="sub">Real accounts, real per-user Gemini keys, real generated listings, all persisted.</p>
+  <h1>🛍️ Thriftly</h1>
+  <p class="sub">Snap a photo of something you found — Thriftly identifies it, estimates the price, and drafts your marketplace listings. Runs on your own free Gemini API key, so your usage never costs anyone anything.</p>
 
   <!-- AUTH -->
   <div id="authView">
     <div class="card">
       <h2 id="authTitle" style="margin-top:0;">Log in</h2>
-      <input id="email" type="email" placeholder="you@example.com">
+      <input id="email" type="email" placeholder="Email address">
       <input id="password" type="password" placeholder="Password (min 8 characters)">
       <div class="err" id="authErr"></div>
       <div id="authMsg" style="font-size:12.5px;color:#54704A;margin:4px 0;"></div>
@@ -122,6 +128,27 @@
       return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     }
     const escAttr = esc;
+
+    // ---------- skeleton loaders ----------
+    function skLine(cls = '') { return `<div class="skeleton sk-line ${cls}"></div>`; }
+    function skeletonDraftList() {
+      return Array.from({ length: 3 }, () => `
+        <div class="draft-item">
+          <div class="skeleton" style="width:36px;height:36px;border-radius:7px;flex:none;"></div>
+          <div class="meta">${skLine()}${skLine('short')}</div>
+        </div>`).join('');
+    }
+    function skeletonAnalysis() {
+      return `<div style="padding:2px 0;">${skLine('short')}${skLine()}${skLine()}${skLine()}${skLine('short')}</div>`;
+    }
+    function skeletonListings() {
+      return Array.from({ length: 2 }, () => `
+        <div class="listing-card">
+          <h3>${skLine('short')}</h3>
+          ${skLine()}${skLine()}
+          <div class="actions" style="align-items:center;">${skLine('short')}</div>
+        </div>`).join('');
+    }
     const appView = document.getElementById('appView');
 
     function api(pathName, opts = {}) {
@@ -301,7 +328,7 @@
       const btn = document.getElementById('scanBtn');
       btn.disabled = true; btn.textContent = 'Scanning…';
       const analysisBox = document.getElementById('analysisBox');
-      analysisBox.innerHTML = '';
+      analysisBox.innerHTML = skeletonAnalysis();
       const fd = new FormData();
       fd.append('photo', file);
       try {
@@ -323,6 +350,8 @@
       if (!current) return;
       const btn = document.getElementById('genBtn');
       btn.disabled = true; btn.textContent = 'Generating…';
+      document.getElementById('listingsHeading').style.display = 'block';
+      document.getElementById('listings').innerHTML = skeletonListings();
       try {
         const res = await api(`/api/drafts/${current.id}/generate-listing`, { method: 'POST' });
         const data = await res.json();
@@ -392,6 +421,7 @@
 
     async function loadDraftList() {
       const draftList = document.getElementById('draftList');
+      draftList.innerHTML = skeletonDraftList();
       const res = await api('/api/drafts');
       const drafts = await res.json();
       draftList.innerHTML = drafts.map(d => {
@@ -408,7 +438,7 @@
             <button class="del" data-del="${escAttr(d.id)}">✕</button>
           </div>
         `;
-      }).join('') || '<p style="color:#7a7268;font-size:12.5px;">No drafts yet.</p>';
+      }).join('') || '<p style="color:#7a7268;font-size:12.5px;">No drafts yet — scan a photo to create your first listing.</p>';
 
       draftList.querySelectorAll('.draft-item').forEach(el => {
         el.addEventListener('click', async (e) => {
