@@ -25,6 +25,7 @@ const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
+const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb } = require('./photos');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
   PLATFORMS, MODEL, testGeminiKey, callGeminiJSON,
@@ -253,13 +254,24 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
       return res.status(400).json({ error: `Unsupported image type: ${req.file.mimetype}. Use jpeg, png, gif, or webp.` });
     }
 
-    const base64 = req.file.buffer.toString('base64');
+    // One resize pass serves both consumers: the (smaller) same image goes to
+    // Gemini and to disk. The upload never survives in full size.
+    let normalized;
+    try {
+      normalized = await shrink(req.file.buffer);
+    } catch (err) {
+      const bad = new Error('That file couldn\'t be read as an image — try a jpg, png, gif, or webp.');
+      bad.status = 400;
+      throw bad;
+    }
+    const base64 = normalized.buffer.toString('base64');
     const analysis = await callGeminiJSON({
-      apiKey, system: ANALYZE_SYSTEM_PROMPT, parts: analyzeParts(base64, req.file.mimetype),
+      apiKey, system: ANALYZE_SYSTEM_PROMPT, parts: analyzeParts(base64, normalized.mimetype),
     });
 
-    const thumb = `data:${req.file.mimetype};base64,${base64}`;
-    const draft = createDraft(db, req.userId, { analysis, thumb, selected: PLATFORMS });
+    // Photo stored as a resized file, referenced by URL — see photos.js.
+    const { url } = savePhoto(normalized.buffer, normalized.mimetype);
+    const draft = createDraft(db, req.userId, { analysis, thumb: url, selected: PLATFORMS });
     res.status(201).json(draft);
   } catch (err) {
     sendError(res, err);
@@ -294,6 +306,16 @@ app.post('/api/drafts/:id/generate-listing', auth, async (req, res) => {
 });
 
 // ============ DRAFT CRUD (all scoped to the logged-in user) ============
+
+// Photo serving doesn't need a Bearer token: <img> tags can't send headers, and
+// the ids are 128-bit random names — unguessable, therefore effectively ACL'd.
+app.get('/api/photos/:id', (req, res) => {
+  const photo = readPhoto(req.params.id);
+  if (!photo) return res.status(404).json({ error: 'Photo not found' });
+  res.set('Content-Type', photo.mimetype);
+  res.set('Cache-Control', 'private, max-age=31536000, immutable'); // content never changes for a given id
+  res.send(photo.buffer);
+});
 app.get('/api/drafts', auth, (req, res) => res.json(listDrafts(db, req.userId)));
 
 app.get('/api/drafts/:id', auth, (req, res) => {
@@ -312,10 +334,16 @@ app.delete('/api/drafts/:id', auth, (req, res) => {
   const existing = getDraft(db, req.userId, req.params.id);
   if (!existing) return res.status(404).json({ error: 'Draft not found' });
   deleteDraft(db, req.userId, req.params.id);
+  const photoId = photoIdFromThumb(existing.thumb);
+  if (photoId) deletePhoto(photoId); // best-effort: the draft row is already gone
   res.status(204).end();
 });
 
 app.delete('/api/drafts', auth, (req, res) => {
+  for (const draft of listDrafts(db, req.userId)) {
+    const photoId = photoIdFromThumb(draft.thumb);
+    if (photoId) deletePhoto(photoId);
+  }
   clearDrafts(db, req.userId);
   res.status(204).end();
 });

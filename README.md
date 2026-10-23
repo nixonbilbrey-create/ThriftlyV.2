@@ -110,8 +110,17 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   tokens from the database.
 - **Must run behind HTTPS** in anything beyond local testing — tokens,
   passwords, and API keys all travel in plain headers otherwise.
-- **Photos are still stored full-size as base64** in SQLite (same tradeoff
-  as before) — fine for testing, worth fixing before real volume.
+- **Photos are stored as files on disk** (under `data/photos/`, configurable
+  via `PHOTOS_DIR`), referenced from each draft by a same-origin URL — no more
+  multi-megabyte base64 blobs in the database. Uploads get one resize pass
+  first (`photos.js` → `shrink()`): longest edge capped at 1400 px, re-encoded
+  as JPEG q82, EXIF orientation auto-applied — and that single normalized
+  image is both what Gemini sees and what's stored; the original never hits
+  disk. They're served without auth over unguessable 128-bit random ids,
+  since `<img>` tags can't send Bearer headers; swap in signed URLs if draft
+  images ever become sensitive. The storage seam is isolated in `photos.js`,
+  so an S3/R2 backend can replace the filesystem without touching anything
+  else.
 
 ## What changed from the single-user version
 
