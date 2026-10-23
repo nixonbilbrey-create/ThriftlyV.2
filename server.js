@@ -17,12 +17,14 @@ const {
   initDb, createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey,
   createSession, getSession, deleteSession, cleanupExpiredSessions, startCleanupLoop,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
+  createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
+  setUserPasswordHash, deleteSessionsForUser,
   listDrafts, getDraft, createDraft, updateDraft, deleteDraft, clearDrafts,
 } = db_;
 const {
-  SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
+  SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
-const { sendVerificationEmail } = require('./mailer');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
   PLATFORMS, MODEL, testGeminiKey, callGeminiJSON,
@@ -39,6 +41,7 @@ app.use(express.json({ limit: '8mb' }));
 const db = initDb(process.env.DB_PATH);
 cleanupExpiredSessions(db);
 cleanupExpiredVerifications(db);
+cleanupExpiredPasswordResets(db);
 const cleanupTimer = startCleanupLoop(db); // hourly purge of expired sessions/verification tokens
 const auth = requireAuth(db);
 
@@ -150,6 +153,42 @@ app.post('/api/auth/resend-verification', authLimiter, async (req, res) => {
   const verifyUrl = `${BASE_URL}/api/auth/verify-email?token=${token}`;
   const mail = await sendVerificationEmail(email, verifyUrl);
   res.json({ ...generic, devVerifyLink: mail.sent ? undefined : mail.devLink });
+});
+
+app.post('/api/auth/request-reset', authLimiter, async (req, res) => {
+  const { email } = req.body || {};
+  // Same generic response whether or not the account exists — combined with the
+  // authLimiter (10/hour/IP), this can't be used to check who has an account.
+  const generic = { message: 'If that email has a Thriftly account, we just sent a password-reset link.' };
+  const user = email && getUserByEmail(db, email);
+  if (!user) return res.json(generic);
+
+  // Only the newest link per user is ever valid — requesting again voids earlier ones.
+  deletePasswordResetsForUser(db, user.id);
+  const token = newToken();
+  createPasswordReset(db, { token, userId: user.id, expiresAt: Date.now() + PASSWORD_RESET_TTL_MS });
+  const resetUrl = `${BASE_URL}/set-password.html?token=${token}`;
+  const mail = await sendPasswordResetEmail(user.email, resetUrl);
+  res.json({ ...generic, devResetLink: mail.sent ? undefined : mail.devLink });
+});
+
+app.post('/api/auth/set-password', async (req, res) => {
+  const { token, password } = req.body || {};
+  const record = token && getPasswordReset(db, token);
+  if (!record || record.expires_at < Date.now()) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired — request a new one from the login page.' });
+  }
+  if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+  const passwordHash = await hashPassword(password);
+  setUserPasswordHash(db, record.user_id, passwordHash);
+  deletePasswordResetsForUser(db, record.user_id);
+  // Whoever set a password just proved they control the mailbox — the same thing
+  // email verification proves — so treat the account as verified too.
+  markUserVerified(db, record.user_id);
+  // The old password is gone; log out every existing session (all devices).
+  deleteSessionsForUser(db, record.user_id);
+  res.json({ ok: true, message: 'Password updated — you can log in with the new password now.' });
 });
 
 app.post('/api/auth/login', loginLimiter, async (req, res) => {

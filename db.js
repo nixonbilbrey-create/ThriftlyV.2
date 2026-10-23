@@ -33,6 +33,13 @@ function initDb(customPath) {
       expires_at  INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS password_resets (
+      token       TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      expires_at  INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS drafts (
       id          TEXT PRIMARY KEY,
       user_id     TEXT NOT NULL,
@@ -46,6 +53,7 @@ function initDb(customPath) {
     CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id);
+    CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
   `);
   // Safe no-op migration for a database created before email verification existed.
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0'); } catch (_) { /* already exists */ }
@@ -132,6 +140,32 @@ function cleanupExpiredVerifications(db) {
   db.prepare('DELETE FROM email_verifications WHERE expires_at < ?').run(Date.now());
 }
 
+// ---------- password reset tokens ----------
+function createPasswordReset(db, { token, userId, expiresAt }) {
+  db.prepare('INSERT INTO password_resets (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .run(token, userId, Date.now(), expiresAt);
+}
+
+function getPasswordReset(db, token) {
+  return db.prepare('SELECT * FROM password_resets WHERE token = ?').get(token) || null;
+}
+
+function deletePasswordResetsForUser(db, userId) {
+  db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(userId);
+}
+
+function cleanupExpiredPasswordResets(db) {
+  db.prepare('DELETE FROM password_resets WHERE expires_at < ?').run(Date.now());
+}
+
+function setUserPasswordHash(db, userId, passwordHash) {
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId);
+}
+
+function deleteSessionsForUser(db, userId) {
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+}
+
 // ---------- periodic cleanup ----------
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // hourly
 
@@ -140,8 +174,9 @@ function runCleanup(db) {
   try {
     const sessions = db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
     const verifications = db.prepare('DELETE FROM email_verifications WHERE expires_at < ?').run(Date.now());
-    if (sessions.changes || verifications.changes) {
-      console.log(`[cleanup] removed ${sessions.changes} expired session(s), ${verifications.changes} expired verification token(s)`);
+    const resets = db.prepare('DELETE FROM password_resets WHERE expires_at < ?').run(Date.now());
+    if (sessions.changes || verifications.changes || resets.changes) {
+      console.log(`[cleanup] removed ${sessions.changes} expired session(s), ${verifications.changes} expired verification token(s), ${resets.changes} expired reset token(s)`);
     }
   } catch (err) {
     console.error('[cleanup] failed:', err.message);
@@ -231,5 +266,7 @@ module.exports = {
   createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey,
   createSession, getSession, deleteSession, cleanupExpiredSessions, runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
+  createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
+  setUserPasswordHash, deleteSessionsForUser,
   listDrafts, getDraft, createDraft, updateDraft, deleteDraft, clearDrafts,
 };

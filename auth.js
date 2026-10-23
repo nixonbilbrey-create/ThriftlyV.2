@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // ---------- passwords ----------
 // Async (thread-pool) variants — bcrypt's sync forms block the event loop ~100ms per call.
@@ -74,5 +75,5 @@ function requireAuth(db) {
 }
 
 module.exports = {
-  SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
+  SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 };

@@ -42,6 +42,8 @@ npm install
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # copy this
 cp .env.example .env    # paste that value in as ENCRYPTION_KEY
 npm start
+
+npm test   # optional: end-to-end smoke test in its own throwaway DB/port
 ```
 
 Open **http://localhost:3001** — sign up, connect a Gemini key (the page
@@ -59,6 +61,8 @@ no key baked into the server. That's the point.
 | POST | `/api/auth/login` | `{email, password}` → `{token, user}` |
 | POST | `/api/auth/logout` | Invalidates the current session |
 | GET | `/api/auth/me` | Current user + whether a Gemini key is connected |
+| POST | `/api/auth/request-reset` | `{email}` — always the same response; if the account exists, emails a single-use reset link (valid 1 hour) |
+| POST | `/api/auth/set-password` | `{token, password}` — completes a reset, sets the new password, voids the token, kills all existing sessions |
 
 All routes below require `Authorization: Bearer <token>`.
 
@@ -91,10 +95,15 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   resend-verification requests / hour per IP, 30 scans / hour per IP. Limits
   reset on restart — run a single process, or swap in a shared store before
   scaling out.
-- **No password reset flow.** Email verification exists (in dev mode without
-  SMTP, the verification link is printed to the console and returned in the
-  API response instead of emailed), but a forgotten password is still a
-  manual database fix.
+- **Password reset flow exists** and follows the verification-token playbook:
+  request-reset returns the same generic response for known and unknown emails,
+  is rate-limited 10/hour per IP, only one live token per user (a new request
+  voids the old link), tokens are single-use and expire in 1 hour, and
+  completing a reset logs out every existing session for the account. With no
+  SMTP configured, the reset link is printed to the console and returned as
+  `devResetLink` — same crutch as the verification link; don't ship that way.
+  Completing a reset also marks the account's email verified: setting the
+  password required reading that mailbox, which is what verification proves.
 - **Sessions are simple bearer tokens** stored in SQLite, 30-day expiry, no
   refresh flow. Logging out deletes the row; that's the whole revocation
   story. An hourly cleanup pass purges expired sessions and verification

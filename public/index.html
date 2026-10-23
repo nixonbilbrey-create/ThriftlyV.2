@@ -61,6 +61,7 @@
       <button id="authSubmit">Log in</button>
       <div class="toggle" id="authToggle">Need an account? Sign up</div>
       <div class="toggle" id="resendToggle" style="display:none;">Resend verification email</div>
+      <div class="toggle" id="forgotToggle">Forgot password?</div>
     </div>
   </div>
 
@@ -121,8 +122,6 @@
       return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     }
     const escAttr = esc;
-
-    const authView = document.getElementById('authView');
     const appView = document.getElementById('appView');
 
     function api(pathName, opts = {}) {
@@ -143,11 +142,11 @@
       document.getElementById('resendToggle').style.display = 'none';
     });
 
-    function showDevLink(link) {
+    function showDevLink(link, label = 'verify') {
       const devBox = document.getElementById('devLinkBox');
       if (!link) { devBox.style.display = 'none'; return; }
       devBox.style.display = 'block';
-      devBox.innerHTML = 'No email service configured — click to verify: <a href="' + escAttr(link) + '" target="_blank">' + esc(link) + '</a>';
+      devBox.innerHTML = 'No email service configured — click to ' + esc(label) + ': <a href="' + escAttr(link) + '" target="_blank">' + esc(link) + '</a>';
     }
 
     document.getElementById('authSubmit').addEventListener('click', async () => {
@@ -195,6 +194,26 @@
       } catch (err) {
         msgBox.textContent = '';
         document.getElementById('authErr').textContent = 'Request failed: ' + err;
+      }
+    });
+
+    document.getElementById('forgotToggle').addEventListener('click', async () => {
+      const email = document.getElementById('email').value.trim();
+      const errBox = document.getElementById('authErr');
+      const msgBox = document.getElementById('authMsg');
+      errBox.textContent = ''; msgBox.textContent = ''; showDevLink(null);
+      document.getElementById('resendToggle').style.display = 'none';
+      if (!email) { errBox.textContent = 'Enter your email address above first'; return; }
+      try {
+        const res = await fetch('/api/auth/request-reset', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }),
+        });
+        const data = await res.json();
+        if (!res.ok) { errBox.textContent = data.error || 'Something went wrong'; return; }
+        msgBox.textContent = data.message;
+        showDevLink(data.devResetLink, 'reset your password');
+      } catch (err) {
+        errBox.textContent = 'Request failed: ' + err;
       }
     });
 
