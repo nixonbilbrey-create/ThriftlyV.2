@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Thriftly</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%8D%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<style>
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue','Segoe UI',Roboto,system-ui,sans-serif;
+    background:#f5f5f7;color:#1d1d1f;
+    max-width:680px;margin:0 auto;padding:48px 20px 80px;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0 0 4px;}
+  p.lead{color:#6e6e73;font-size:14px;margin:0 0 28px;}
+  h2{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:34px 0 10px;}
+  h3{font-size:15px;font-weight:600;margin:22px 0 6px;}
+  p,li{font-size:14.5px;line-height:1.65;color:#3a3a3c;}
+  .card{background:#ffffff;border-radius:16px;padding:28px;box-shadow:0 4px 14px rgba(0,0,0,.06);}
+  .version{display:inline-block;background:#e8e8ed;color:#6e6e73;border-radius:980px;padding:3px 12px;font-size:12px;margin-bottom:6px;}
+  a{color:#0071e3;text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  ul{padding-left:20px;margin:8px 0;}
+  li{margin:4px 0;}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0;}
+  th,td{text-align:left;border-bottom:1px solid #ececed;padding:8px 6px;vertical-align:top;}
+  th{color:#6e6e73;font-weight:600;}
+</style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="lead">This policy explains exactly what Thriftly does with your data — in plain language. It's short on purpose.</p>
+  <div class="card">
+    <span class="version">Version 2026-10-23</span>
+    <p style="font-size:13px;"><b>Last updated:</b> October 23, 2026. Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
+
+    <h2>Who runs Thriftly</h2>
+    <p>Thriftly is a small app for people reselling secondhand items: you photograph something, the software identifies it, suggests a price and drafts listings for resale platforms. The operator is the person or entity that hosts the copy of Thriftly you're signing up on.</p>
+
+    <h2>What we collect and store</h2>
+    <table>
+      <tr><th>Data</th><th>Why</th><th>How stored</th></tr>
+      <tr><td>Email address</td><td>Account identity, verification and password-reset emails</td><td>Plain text in a database on the operator's server</td></tr>
+      <tr><td>Password</td><td>Logging in</td><td>Only a bcrypt hash — we never see or store your actual password</td></tr>
+      <tr><td>Privacy Policy agreement</td><td>Proof of consent</td><td>Policy version + timestamp recorded when you sign up</td></tr>
+      <tr><td>Your Gemini API key</td><td>So scans and listing generation run on <b>your own</b> Google account, not the operator's</td><td>Encrypted at rest (AES-256-GCM) with a server-side key</td></tr>
+      <tr><td>Photos you upload</td><td>Saved with your item drafts so you can recognize them later</td><td>Resized image files on the server's disk (never in the database)</td></tr>
+      <tr><td>Drafts and generated listings</td><td>The app's core feature</td><td>Database on the operator's server, tied to your account</td></tr>
+      <tr><td>Session + verification tokens</td><td>Keeping you logged in; email verification and password reset</td><td>Database rows; expired ones purged regularly</td></tr>
+    </table>
+
+    <h2>What we don't collect</h2>
+    <ul>
+      <li>No analytics, advertising or tracking of any kind.</li>
+      <li>No payment information — the service costs nothing to run for you, and you bring your own Gemini key.</li>
+      <li>No contacts, location data, or anything off the one photo you choose to scan.</li>
+    </ul>
+
+    <h2>Third parties involved</h2>
+    <ul>
+      <li><b>Google (Gemini API).</b> When you scan a photo or generate listings, your photo and the item text are sent to Google's Gemini service <i>using your own API key</i>, to identify the item and draft copy. This is a direct consequence of using the feature. On Gemini's free tier, Google may use inputs to improve its models under Google's own terms — treat your photos with that in mind.</li>
+      <li><b>Email provider.</b> Verification and password-reset emails are delivered through the operator's SMTP provider, which processes the recipient address and message content to send them.</li>
+      <li><b>Hosting provider.</b> The server (database, files, code) runs on cloud infrastructure the operator rents.</li>
+    </ul>
+
+    <h2>How long we keep things</h2>
+    <p>Your account, drafts and photos are kept until you delete them. Verification and password-reset tokens are single-use, expire quickly, and are purged on a schedule. Deleting a draft removes its photo. Deleting your account (see below) removes everything at once.</p>
+
+    <h2>Your rights and choices</h2>
+    <ul>
+      <li><b>Delete your account:</b> while signed in, "Delete account…" erases your account, every draft, every photo, and all sessions immediately and irreversibly.</li>
+      <li><b>Disconnect your Gemini key:</b> one button in settings removes it; the encrypted copy is deleted.</li>
+      <li><b>Delete drafts:</b> individually or all at once, removes the draft and its photo.</li>
+      <li><b>Session control:</b> logging out invalidates the current session; changing your password (via password reset) logs out every device.</li>
+      <li><b>Export:</b> your listings are plain text in your drafts — copy them out at any time. If you need a bulk export of your photos, contact the operator.</li>
+    </ul>
+
+    <h2>Security</h2>
+    <p>Passwords are hashed with bcrypt; your Gemini key is encrypted at rest; sessions are bearer tokens that only work over the app's API; and the app sets standard browser protections (content-security policy, no-sniff, etc.). No system is perfectly secure, and the operator's server is the trust anchor — choose an operator you trust.</p>
+
+    <h2>Children</h2>
+    <p>Thriftly isn't intended for children under 13, and we don't knowingly collect their data.</p>
+
+    <h2>Contact</h2>
+    <p>Questions, corrections, or deletion requests beyond the in-app tools: contact the operator of the Thriftly instance you're using, at the address given where you found this app. If you run your own instance, that's you — and you can read the entire codebase, because it's yours.</p>
+  </div>
+  <p style="margin-top:20px;"><a href="/">← Back to Thriftly</a></p>
+</body>
+</html>

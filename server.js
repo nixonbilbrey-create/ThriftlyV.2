@@ -14,7 +14,7 @@ if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length !== 64) {
 
 const db_ = require('./db');
 const {
-  initDb, createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey,
+  initDb, createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey, deleteUserRow,
   createSession, getSession, deleteSession, cleanupExpiredSessions, startCleanupLoop,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
@@ -33,6 +33,10 @@ const {
 } = require('./gemini');
 
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
+
+// Must match the version shown/dated in public/privacy.html. Bump BOTH when the
+// policy changes — every signup records it, and /api/auth/me reports it back.
+const PRIVACY_VERSION = '2026-10-23';
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -136,13 +140,19 @@ function sendError(res, err) {
 
 // ============ AUTH ============
 app.post('/api/auth/signup', authLimiter, async (req, res) => {
-  const { email, password } = req.body || {};
+  const { email, password, agree } = req.body || {};
   if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required' });
   if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  // Consent is enforced server-side, not just by the UI checkbox — an API caller
+  // can't create an account that never accepted the privacy policy.
+  if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy to create an account' });
   if (getUserByEmail(db, email)) return res.status(409).json({ error: 'An account with that email already exists' });
 
   const id = crypto.randomBytes(8).toString('hex');
-  const user = createUser(db, { id, email, passwordHash: await hashPassword(password) });
+  const user = createUser(db, {
+    id, email, passwordHash: await hashPassword(password),
+    consentVersion: PRIVACY_VERSION, consentAt: Date.now(),
+  });
 
   const token = newToken();
   createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
@@ -264,6 +274,22 @@ app.post('/api/account/gemini-key', auth, async (req, res) => {
 
 app.delete('/api/account/gemini-key', auth, (req, res) => {
   clearUserGeminiKey(db, req.userId);
+  res.status(204).end();
+});
+
+// Self-service account deletion — the privacy policy promises it, so it's a real
+// endpoint: drafts + their photos, sessions, and every pending token go, then the
+// user row itself. Idempotent-safe: 404 once the account is gone.
+app.delete('/api/account', auth, (req, res) => {
+  for (const draft of listDrafts(db, req.userId)) {
+    const photoId = photoIdFromThumb(draft.thumb);
+    if (photoId) deletePhoto(photoId);
+  }
+  clearDrafts(db, req.userId);
+  deleteSessionsForUser(db, req.userId);
+  deleteEmailVerificationsForUser(db, req.userId);
+  deletePasswordResetsForUser(db, req.userId);
+  deleteUserRow(db, req.userId);
   res.status(204).end();
 });
 

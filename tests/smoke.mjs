@@ -63,9 +63,17 @@ async function waitForServer(deadlineMs = 10000) {
 
 // ---------- flows ----------
 async function authAndVerifyFlow() {
+  // consent gate first: no agreement, no account (server-side, not just UI)
+  const noAgree = await fetch(`${BASE}/api/auth/signup`, {
+    method: 'POST', headers: plainHeaders,
+    body: JSON.stringify({ email: 'noagree@test.dev', password: 'long-enough-pass' }),
+  });
+  assert.equal(noAgree.status, 400, 'signup without consent must 400');
+  assert.match((await json(noAgree)).error || '', /Privacy Policy/, 'consent error must name the policy');
+
   const signup = await fetch(`${BASE}/api/auth/signup`, {
     method: 'POST', headers: plainHeaders,
-    body: JSON.stringify({ email: 'smoke@test.dev', password: 'smoke-password-1' }),
+    body: JSON.stringify({ email: 'smoke@test.dev', password: 'smoke-password-1', agree: true }),
   });
   const signupBody = await json(signup);
   assert.equal(signup.status, 201, `signup -> ${signup.status} ${JSON.stringify(signupBody)}`);
@@ -73,7 +81,7 @@ async function authAndVerifyFlow() {
 
   const dup = await fetch(`${BASE}/api/auth/signup`, {
     method: 'POST', headers: plainHeaders,
-    body: JSON.stringify({ email: 'smoke@test.dev', password: 'smoke-password-1' }),
+    body: JSON.stringify({ email: 'smoke@test.dev', password: 'smoke-password-1', agree: true }),
   });
   assert.equal(dup.status, 409, 'duplicate signup must 409');
 
@@ -104,6 +112,7 @@ async function authAndVerifyFlow() {
   const me = await json(await fetch(`${BASE}/api/auth/me`, { headers: authHeaders(token) }));
   assert.equal(me.email, 'smoke@test.dev');
   assert.equal(me.emailVerified, true);
+  assert.ok(me.policyVersion && me.policyAcceptedAt, ' consent version + timestamp recorded');
 
   const noAuth = await fetch(`${BASE}/api/auth/me`);
   assert.equal(noAuth.status, 401, 'missing bearer must 401');
@@ -187,7 +196,7 @@ async function passwordResetFlow(loginToken) {
 async function secondUserFlow() {
   const signup = await fetch(`${BASE}/api/auth/signup`, {
     method: 'POST', headers: plainHeaders,
-    body: JSON.stringify({ email: 'smoke2@test.dev', password: 'second-pass-123' }),
+    body: JSON.stringify({ email: 'smoke2@test.dev', password: 'second-pass-123', agree: true }),
   });
   const { devVerifyLink } = await json(signup);
   assert.equal(signup.status, 201, 'second signup must 201');
@@ -199,6 +208,33 @@ async function secondUserFlow() {
   const { token } = await json(login);
   assert.equal(login.status, 200, 'second login must work');
   return token;
+}
+
+// Self-service deletion promised by the privacy policy: everything gone, then login dead.
+async function accountDeleteFlow() {
+  const signup = await fetch(`${BASE}/api/auth/signup`, {
+    method: 'POST', headers: plainHeaders,
+    body: JSON.stringify({ email: 'deleteme@test.dev', password: 'delete-me-pass-1', agree: true }),
+  });
+  assert.equal(signup.status, 201, 'third signup must 201');
+  const { devVerifyLink } = await json(signup);
+  await fetch(devVerifyLink);
+  const login = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST', headers: plainHeaders,
+    body: JSON.stringify({ email: 'deleteme@test.dev', password: 'delete-me-pass-1' }),
+  });
+  const { token } = await json(login);
+  assert.equal(login.status, 200, 'third login must work');
+
+  const del = await fetch(`${BASE}/api/account`, { method: 'DELETE', headers: authHeaders(token) });
+  assert.equal(del.status, 204, 'account deletion must 204');
+  const sessionDead = await fetch(`${BASE}/api/auth/me`, { headers: authHeaders(token) });
+  assert.equal(sessionDead.status, 401, 'session must die with the account');
+  const rel = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST', headers: plainHeaders,
+    body: JSON.stringify({ email: 'deleteme@test.dev', password: 'delete-me-pass-1' }),
+  });
+  assert.equal(rel.status, 401, 'login after account deletion must 401');
 }
 
 async function photoAndDraftsFlow(token, otherToken) {
@@ -379,6 +415,9 @@ try {
   const t25 = Date.now();
   await resizeFlow();
   console.log(`  ok   photo resize/compress (${Date.now() - t25}ms)`);
+  const tAbs = Date.now();
+  await accountDeleteFlow();
+  console.log(`  ok   account deletion (${Date.now() - tAbs}ms)`);
   const t26 = Date.now();
   await smtpFailureFlow();
   console.log(`  ok   smtp failure keeps links private (${Date.now() - t26}ms)`);

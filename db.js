@@ -13,6 +13,8 @@ function initDb(customPath) {
       email                 TEXT NOT NULL UNIQUE,
       password_hash         TEXT NOT NULL,
       email_verified        INTEGER NOT NULL DEFAULT 0,
+      consent_version       TEXT,
+      consent_at            INTEGER,
       gemini_key_enc        TEXT,
       gemini_key_valid      INTEGER NOT NULL DEFAULT 0,
       gemini_key_updated_at INTEGER,
@@ -55,18 +57,19 @@ function initDb(customPath) {
     CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
   `);
-  // Safe no-op migration for a database created before email verification existed.
+  // Safe no-op migrations for databases created before these columns existed.
   try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0'); } catch (_) { /* already exists */ }
+  try { db.exec('ALTER TABLE users ADD COLUMN consent_version TEXT'); } catch (_) { /* already exists */ }
+  try { db.exec('ALTER TABLE users ADD COLUMN consent_at INTEGER'); } catch (_) { /* already exists */ }
   return db;
 }
 
 // ---------- users ----------
-function createUser(db, { id, email, passwordHash }) {
-  const now = Date.now();
+function createUser(db, { id, email, passwordHash, consentVersion, consentAt }) {
   db.prepare(`
-    INSERT INTO users (id, email, password_hash, gemini_key_valid, created_at)
-    VALUES (?, ?, ?, 0, ?)
-  `).run(id, email, passwordHash, now);
+    INSERT INTO users (id, email, password_hash, consent_version, consent_at, gemini_key_valid, created_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?)
+  `).run(id, email, passwordHash, consentVersion || null, consentAt || null, Date.now());
   return getUserById(db, id);
 }
 
@@ -78,12 +81,18 @@ function getUserById(db, id) {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(id) || null;
 }
 
+function deleteUserRow(db, userId) {
+  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+}
+
 function publicUser(user) {
   if (!user) return null;
   return {
     id: user.id,
     email: user.email,
     emailVerified: !!user.email_verified,
+    policyVersion: user.consent_version,
+    policyAcceptedAt: user.consent_at,
     geminiKeyConnected: !!user.gemini_key_enc,
     geminiKeyValid: !!user.gemini_key_valid,
     geminiKeyUpdatedAt: user.gemini_key_updated_at,
@@ -263,7 +272,7 @@ function clearDrafts(db, userId) {
 
 module.exports = {
   initDb,
-  createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey,
+  createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey, deleteUserRow,
   createSession, getSession, deleteSession, cleanupExpiredSessions, runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,

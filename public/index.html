@@ -6,102 +6,170 @@
 <title>Thriftly — snap it, price it, list it</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%8D%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <style>
-  body{font-family:system-ui,-apple-system,sans-serif;max-width:780px;margin:32px auto;padding:0 20px;color:#1c1a17;}
-  h1{font-size:18px;margin:0 0 4px;}
-  p.sub{color:#7a7268;font-size:13px;margin:0 0 18px;}
-  h2{font-size:14px;margin:22px 0 8px;}
-  .card{border:1px solid #e6e2d8;border-radius:10px;padding:16px;margin-bottom:14px;max-width:340px;}
-  input,textarea{width:100%;border:1px solid #e6e2d8;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:8px;box-sizing:border-box;}
-  textarea{resize:vertical;min-height:60px;}
-  button{padding:9px 16px;border-radius:8px;border:none;background:#1c1a17;color:#fff;cursor:pointer;font-weight:600;font-size:13.5px;}
-  button.ghost{background:transparent;color:#1c1a17;border:1px solid #ddd;}
-  button:disabled{opacity:.45;cursor:default;}
-  .toggle{font-size:12.5px;color:#7a7268;margin-top:8px;cursor:pointer;text-decoration:underline;}
-  .err{color:#a8462f;font-size:12.5px;margin:4px 0;}
-  .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
-  .topbar span{font-size:13px;color:#7a7268;}
-  main{display:grid;grid-template-columns:1fr 240px;gap:28px;}
-  @media (max-width:680px){ main{grid-template-columns:1fr;} }
-  aside{border-left:1px solid #eee;padding-left:20px;}
-  #preview{max-width:100%;max-height:200px;border-radius:10px;margin:8px 0;display:none;object-fit:cover;}
-  .row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #eee;font-size:13.5px;}
-  .row span{color:#7a7268;}
-  .row b{text-align:right;}
-  .listing-card{border:1px solid #e6e2d8;border-radius:10px;padding:12px;margin-bottom:10px;}
-  .listing-card h3{margin:0 0 8px;font-size:13.5px;display:flex;justify-content:space-between;align-items:center;}
-  .listing-card input,.listing-card textarea{font-size:12.5px;margin-bottom:6px;}
-  .listing-card .actions{display:flex;gap:8px;align-items:center;font-size:12px;}
-  .listing-card .actions button{padding:5px 10px;font-size:12px;}
-  .price-input{width:70px;}
-  .draft-item{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #eee;cursor:pointer;font-size:12.5px;}
-  .draft-item img{width:36px;height:36px;border-radius:7px;object-fit:cover;flex:none;}
+  :root{
+    --bg:#f5f5f7; --text:#1d1d1f; --sub:#6e6e73; --line:#d2d2d7;
+    --blue:#0071e3; --blue-hover:#0077ed; --red:#ff3b30; --green:#34c759;
+    --seg:#e8e8ed; --card:#ffffff;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue','Segoe UI',Roboto,system-ui,sans-serif;
+    background:var(--bg); color:var(--text);
+    max-width:780px; margin:0 auto; padding:40px 20px 80px;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px;}
+  p.sub{color:var(--sub);font-size:15px;line-height:1.5;margin:0 0 24px;max-width:56ch;}
+  h2{font-size:17px;font-weight:600;letter-spacing:-.01em;margin:22px 0 10px;}
+  .card{
+    background:var(--card); border-radius:16px; padding:22px;
+    margin-bottom:16px; max-width:400px;
+    box-shadow:0 4px 14px rgba(0,0,0,.06);
+  }
+  input,textarea{
+    width:100%; border:1px solid var(--line); border-radius:12px;
+    background:#fff; color:var(--text);
+    padding:10px 12px; font:inherit; font-size:14px; margin-bottom:10px;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,113,227,.18);}
+  textarea{resize:vertical;min-height:64px;}
+  input[type=file]::file-selector-button{
+    border:none;border-radius:980px;background:var(--seg);color:var(--text);
+    padding:8px 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;margin-right:10px;
+  }
+  input[type=checkbox]{accent-color:var(--blue);}
+  label.check{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--sub);margin:2px 0 10px;}
+  label.check input{margin-top:2px;width:auto;}
+  button{
+    padding:10px 18px;border-radius:980px;border:none;
+    background:var(--blue);color:#fff;cursor:pointer;
+    font-weight:600;font-size:14px;letter-spacing:-.01em;
+    transition:background .15s, transform .05s;
+  }
+  button:hover{background:var(--blue-hover);}
+  button:active{transform:scale(.98);}
+  button.secondary{background:var(--seg);color:var(--text);}
+  button.secondary:hover{background:#dee0e3;}
+  button.danger{background:transparent;color:var(--red);}
+  button.danger:hover{background:rgba(255,59,48,.08);}
+  button.mini{padding:6px 14px;font-size:12.5px;}
+  button:disabled{opacity:.4;cursor:default;}
+  .toggle{font-size:13px;color:var(--sub);margin-top:10px;cursor:pointer;display:inline-block;margin-right:14px;}
+  .toggle:hover{color:var(--text);text-decoration:underline;}
+  .err{color:var(--red);font-size:13px;margin:2px 0;}
+  .msg{color:#248a3d;font-size:13px;margin:4px 0;}
+  .seg{display:flex;background:var(--seg);border-radius:10px;padding:2px;margin-bottom:14px;}
+  .seg-item{
+    flex:1;text-align:center;padding:7px 0;border-radius:8px;
+    font-size:13.5px;font-weight:600;color:var(--sub);cursor:pointer;
+    transition:color .15s, background .15s;
+  }
+  .seg-item.active{background:#fff;color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.08);}
+  .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
+  .topbar span{font-size:14px;color:var(--sub);}
+  main{display:grid;grid-template-columns:1fr 260px;gap:24px;align-items:start;}
+  @media (max-width:680px){ main{grid-template-columns:1fr;} aside{border-left:none;padding-left:0;} }
+  aside{border-left:1px solid #e5e5ea;padding-left:20px;}
+  #preview{width:100%;max-height:220px;border-radius:14px;margin:10px 0;display:none;object-fit:cover;box-shadow:0 4px 14px rgba(0,0,0,.08);}
+  #preview.display{display:block;}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f2;font-size:14px;}
+  .row:last-child{border-bottom:none;}
+  .row span{color:var(--sub);}
+  .row b{text-align:right;font-weight:600;}
+  .listing-card{
+    background:var(--card);border-radius:16px;padding:16px;margin-bottom:12px;
+    box-shadow:0 4px 14px rgba(0,0,0,.05);
+  }
+  .listing-card h3{margin:0 0 10px;font-size:14px;font-weight:600;display:flex;justify-content:space-between;align-items:center;}
+  .listing-card input,.listing-card textarea{font-size:13px;margin-bottom:8px;border-radius:10px;}
+  .listing-card .actions{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--sub);}
+  .listing-card .actions input[type=checkbox]{margin:0;}
+  .price-input{width:72px;}
+  .draft-item{
+    display:flex;gap:10px;align-items:center;padding:10px;border-radius:12px;
+    background:var(--card);margin-bottom:8px;cursor:pointer;font-size:13px;
+    box-shadow:0 2px 8px rgba(0,0,0,.04);transition:box-shadow .15s;
+  }
+  .draft-item:hover{box-shadow:0 4px 14px rgba(0,0,0,.08);}
+  .draft-item img{width:40px;height:40px;border-radius:9px;object-fit:cover;flex:none;background:#f0f0f2;}
   .draft-item .meta{flex:1;min-width:0;}
   .draft-item .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .draft-item .status{color:#7a7268;font-size:11px;}
-  .draft-item .del{background:none;border:none;color:#aaa;cursor:pointer;font-size:13px;padding:2px 4px;}
-  .key-status{font-size:13px;margin-bottom:8px;}
-  .key-status.ok{color:#54704A;}
-  a.link{color:#1c1a17;}
-  pre{background:#f4f2ed;padding:10px;border-radius:8px;white-space:pre-wrap;font-size:11.5px;}
-  #hidden{display:none;}
-  /* skeleton loaders: shimmer placeholders shown wherever data is mid-flight */
+  .draft-item .status{color:var(--sub);font-size:11.5px;}
+  .draft-item .del{background:none;border:none;color:#aeaeb2;cursor:pointer;font-size:14px;padding:2px 6px;}
+  .draft-item .del:hover{color:var(--red);}
+  .key-status{font-size:14px;margin-bottom:10px;}
+  .key-status.ok{color:#248a3d;}
+  a.link{color:var(--blue);text-decoration:none;}
+  a.link:hover{text-decoration:underline;}
+  pre{background:#f0f0f2;padding:12px;border-radius:12px;white-space:pre-wrap;font-size:11.5px;overflow-x:auto;}
+  .foot{margin-top:36px;font-size:12px;color:var(--sub);}
+  /* skeleton loaders */
   @keyframes shimmer{0%{background-position:-400px 0;}100%{background-position:400px 0;}}
-  .skeleton{background:linear-gradient(90deg,#eceae4 25%,#f6f4ee 40%,#eceae4 55%);background-size:400px 100%;animation:shimmer 1.2s linear infinite;border-radius:6px;height:12px;}
+  .skeleton{background:linear-gradient(90deg,#e8e8ed 25%,#f2f2f5 40%,#e8e8ed 55%);background-size:400px 100%;animation:shimmer 1.2s linear infinite;border-radius:6px;height:12px;}
   .sk-line{margin:8px 0;}
   .sk-line.short{width:55%;}
+  #devLinkBox{font-size:11.5px;word-break:break-all;}
 </style>
 </head>
 <body>
-  <h1>🛍️ Thriftly</h1>
+  <h1>Thriftly</h1>
   <p class="sub">Snap a photo of something you found — Thriftly identifies it, estimates the price, and drafts your marketplace listings. Runs on your own free Gemini API key, so your usage never costs anyone anything.</p>
 
   <!-- AUTH -->
   <div id="authView">
     <div class="card">
-      <h2 id="authTitle" style="margin-top:0;">Log in</h2>
-      <input id="email" type="email" placeholder="Email address">
-      <input id="password" type="password" placeholder="Password (min 8 characters)">
+      <div class="seg" id="authSeg">
+        <div class="seg-item active" data-mode="login">Log in</div>
+        <div class="seg-item" data-mode="signup">Sign up</div>
+      </div>
+      <input id="email" type="email" placeholder="Email address" autocomplete="email">
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+      <label id="agreeRow" class="check" style="display:none;">
+        <input type="checkbox" id="agree">
+        <span>I agree to the <a class="link" href="/privacy.html" target="_blank">Privacy Policy</a>.</span>
+      </label>
       <div class="err" id="authErr"></div>
-      <div id="authMsg" style="font-size:12.5px;color:#54704A;margin:4px 0;"></div>
-      <div id="devLinkBox" style="display:none;font-size:11.5px;margin:4px 0;word-break:break-all;"></div>
-      <button id="authSubmit">Log in</button>
-      <div class="toggle" id="authToggle">Need an account? Sign up</div>
-      <div class="toggle" id="resendToggle" style="display:none;">Resend verification email</div>
-      <div class="toggle" id="forgotToggle">Forgot password?</div>
+      <div class="msg" id="authMsg"></div>
+      <div id="devLinkBox" style="display:none;margin:4px 0;"></div>
+      <button id="authSubmit" style="width:100%;">Log in</button>
+      <div>
+        <span class="toggle" id="resendToggle" style="display:none;">Resend verification email</span>
+        <span class="toggle" id="forgotToggle">Forgot password?</span>
+      </div>
     </div>
   </div>
 
   <!-- APP -->
   <div id="appView" style="display:none;">
     <div class="topbar">
-      <span>Logged in as <b id="whoami"></b></span>
-      <button class="ghost" id="logoutBtn">Log out</button>
+      <span>Signed in as <b id="whoami" style="color:var(--text);"></b></span>
+      <button class="secondary mini" id="logoutBtn">Log out</button>
     </div>
 
     <div class="card" id="keyCard">
       <h2 style="margin-top:0;">Gemini API key</h2>
       <div class="key-status" id="keyStatus"></div>
       <div id="keyConnectForm">
-        <p style="font-size:12.5px;color:#7a7268;margin:0 0 8px;">
+        <p style="font-size:13px;color:var(--sub);margin:0 0 10px;">
           <a class="link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a free key from Google AI Studio ↗</a>
           — sign in, click "Create API key", paste it below.
         </p>
-        <input id="geminiKeyInput" placeholder="Paste your Gemini API key">
+        <input id="geminiKeyInput" placeholder="Paste your Gemini API key" autocomplete="off">
         <div class="err" id="keyErr"></div>
-        <button id="saveKeyBtn">Validate & save</button>
+        <button id="saveKeyBtn">Validate &amp; save</button>
       </div>
-      <button class="ghost" id="disconnectKeyBtn" style="display:none;">Disconnect key</button>
+      <button class="secondary mini" id="disconnectKeyBtn" style="display:none;">Disconnect key</button>
     </div>
 
     <main>
       <div>
         <input type="file" accept="image/*" id="fileInput">
         <img id="preview" alt="">
-        <br>
-        <button id="scanBtn" disabled>1. Scan &amp; save</button>
-        <div id="analysisBox" style="margin-top:12px;"></div>
+        <button id="scanBtn" disabled>Scan photo</button>
+        <div id="analysisBox" style="margin-top:14px;"></div>
 
-        <button id="genBtn" style="display:none;margin-top:10px;">2. Generate listings</button>
+        <button id="genBtn" style="display:none;margin-top:12px;">Generate listings</button>
 
         <h2 id="listingsHeading" style="display:none;">Listing drafts</h2>
         <div id="listings"></div>
@@ -110,10 +178,15 @@
       <aside>
         <h2 style="margin-top:0;">Your drafts</h2>
         <div id="draftList"></div>
-        <button class="ghost" id="clearAllBtn" style="margin-top:12px;font-size:12px;">Clear all</button>
+        <button class="secondary mini" id="clearAllBtn" style="margin-top:10px;">Clear all</button>
+        <div style="margin-top:22px;">
+          <button class="danger mini" id="deleteAccountBtn">Delete account…</button>
+        </div>
       </aside>
     </main>
   </div>
+
+  <p class="foot">Thriftly keeps your data on its own server with no trackers — see the <a class="link" href="/privacy.html">Privacy Policy</a>.</p>
 
   <script>
     let token = localStorage.getItem('thriftly_token') || null;
@@ -130,46 +203,60 @@
     const escAttr = esc;
 
     // ---------- skeleton loaders ----------
-    function skLine(cls = '') { return `<div class="skeleton sk-line ${cls}"></div>`; }
+    function skLine(cls = '') { return '<div class="skeleton sk-line ' + cls + '"></div>'; }
     function skeletonDraftList() {
-      return Array.from({ length: 3 }, () => `
-        <div class="draft-item">
-          <div class="skeleton" style="width:36px;height:36px;border-radius:7px;flex:none;"></div>
-          <div class="meta">${skLine()}${skLine('short')}</div>
-        </div>`).join('');
+      let out = '';
+      for (let i = 0; i < 3; i++) {
+        out += '<div class="draft-item">'
+          + '<div class="skeleton" style="width:40px;height:40px;border-radius:9px;flex:none;"></div>'
+          + '<div class="meta">' + skLine() + skLine('short') + '</div>'
+          + '</div>';
+      }
+      return out;
     }
     function skeletonAnalysis() {
-      return `<div style="padding:2px 0;">${skLine('short')}${skLine()}${skLine()}${skLine()}${skLine('short')}</div>`;
+      return '<div style="padding:2px 0;">' + skLine('short') + skLine() + skLine() + skLine() + skLine('short') + '</div>';
     }
     function skeletonListings() {
-      return Array.from({ length: 2 }, () => `
-        <div class="listing-card">
-          <h3>${skLine('short')}</h3>
-          ${skLine()}${skLine()}
-          <div class="actions" style="align-items:center;">${skLine('short')}</div>
-        </div>`).join('');
+      let out = '';
+      for (let i = 0; i < 2; i++) {
+        out += '<div class="listing-card">'
+          + '<h3>' + skLine('short') + '</h3>' + skLine() + skLine()
+          + '<div class="actions" style="align-items:center;">' + skLine('short') + '</div>'
+          + '</div>';
+      }
+      return out;
     }
+    const authView = document.getElementById('authView');
     const appView = document.getElementById('appView');
 
     function api(pathName, opts = {}) {
       const headers = opts.headers || {};
-      if (token) headers['Authorization'] = 'Bearer ' + token;
-      return fetch(pathName, { ...opts, headers });
+      if (token) headers.Authorization = 'Bearer ' + token;
+      return fetch(pathName, Object.assign({}, opts, { headers }));
     }
 
-    // ---------- auth ----------
-    document.getElementById('authToggle').addEventListener('click', () => {
-      signupMode = !signupMode;
-      document.getElementById('authTitle').textContent = signupMode ? 'Sign up' : 'Log in';
-      document.getElementById('authSubmit').textContent = signupMode ? 'Sign up' : 'Log in';
-      document.getElementById('authToggle').textContent = signupMode ? 'Have an account? Log in' : "Need an account? Sign up";
+    // ---------- auth (segmented control) ----------
+    function setAuthMode(mode) {
+      signupMode = mode === 'signup';
+      document.querySelectorAll('#authSeg .seg-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.mode === mode);
+      });
+      document.getElementById('authSubmit').textContent = signupMode ? 'Create account' : 'Log in';
+      document.getElementById('agreeRow').style.display = signupMode ? 'flex' : 'none';
+      document.getElementById('password').placeholder = signupMode ? 'Password (min 8 characters)' : 'Password';
+      document.getElementById('password').autocomplete = signupMode ? 'new-password' : 'current-password';
       document.getElementById('authErr').textContent = '';
       document.getElementById('authMsg').textContent = '';
       document.getElementById('devLinkBox').style.display = 'none';
       document.getElementById('resendToggle').style.display = 'none';
+    }
+    document.querySelectorAll('#authSeg .seg-item').forEach(el => {
+      el.addEventListener('click', () => setAuthMode(el.dataset.mode));
     });
 
-    function showDevLink(link, label = 'verify') {
+    function showDevLink(link, label) {
+      label = label || 'verify';
       const devBox = document.getElementById('devLinkBox');
       if (!link) { devBox.style.display = 'none'; return; }
       devBox.style.display = 'block';
@@ -183,10 +270,14 @@
       const msgBox = document.getElementById('authMsg');
       const resendToggle = document.getElementById('resendToggle');
       errBox.textContent = ''; msgBox.textContent = ''; showDevLink(null); resendToggle.style.display = 'none';
+      if (signupMode && !document.getElementById('agree').checked) {
+        errBox.textContent = 'Please agree to the Privacy Policy to create an account';
+        return;
+      }
       try {
         const res = await fetch(signupMode ? '/api/auth/signup' : '/api/auth/login', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email, password }),
+          body: JSON.stringify({ email, password, agree: signupMode }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -246,11 +337,15 @@
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       await api('/api/auth/logout', { method: 'POST' });
-      token = null; me = null;
+      leaveApp();
+    });
+
+    function leaveApp() {
+      token = null; me = null; current = null; file = null;
       localStorage.removeItem('thriftly_token');
       appView.style.display = 'none';
       authView.style.display = 'block';
-    });
+    }
 
     async function tryResumeSession() {
       if (!token) return;
@@ -267,6 +362,25 @@
       renderKeyStatus();
       loadDraftList();
     }
+
+    // ---------- account deletion ----------
+    document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
+      if (!confirm('Delete your account permanently? Every draft, photo and session is erased immediately and cannot be recovered.')) return;
+      const btn = document.getElementById('deleteAccountBtn');
+      btn.disabled = true;
+      try {
+        const res = await api('/api/account', { method: 'DELETE' });
+        if (res.status === 204) {
+          alert('Your account and all its data have been deleted.');
+          leaveApp();
+        } else {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || 'Deletion failed — try again');
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
 
     // ---------- Gemini key ----------
     function renderKeyStatus() {
@@ -320,7 +434,7 @@
       if (!file) return;
       const preview = document.getElementById('preview');
       preview.src = URL.createObjectURL(file);
-      preview.style.display = 'block';
+      preview.classList.add('display');
       document.getElementById('scanBtn').disabled = false;
     });
 
@@ -334,15 +448,15 @@
       try {
         const res = await api('/api/scan', { method: 'POST', body: fd });
         const data = await res.json();
-        if (!res.ok) { analysisBox.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`; return; }
+        if (!res.ok) { analysisBox.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>'; return; }
         current = data;
         renderAnalysis();
         renderListings();
         loadDraftList();
       } catch (err) {
-        analysisBox.innerHTML = `<pre>Request failed: ${err}</pre>`;
+        analysisBox.innerHTML = '<pre>Request failed: ' + esc(String(err)) + '</pre>';
       } finally {
-        btn.disabled = false; btn.textContent = '1. Scan & save';
+        btn.disabled = false; btn.textContent = 'Scan photo';
       }
     });
 
@@ -353,29 +467,37 @@
       document.getElementById('listingsHeading').style.display = 'block';
       document.getElementById('listings').innerHTML = skeletonListings();
       try {
-        const res = await api(`/api/drafts/${current.id}/generate-listing`, { method: 'POST' });
+        const res = await api('/api/drafts/' + current.id + '/generate-listing', { method: 'POST' });
         const data = await res.json();
-        if (!res.ok) { document.getElementById('listings').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`; document.getElementById('listingsHeading').style.display = 'block'; return; }
+        if (!res.ok) {
+          document.getElementById('listings').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+          document.getElementById('listingsHeading').style.display = 'block';
+          return;
+        }
         current = data;
         renderListings();
         loadDraftList();
       } catch (err) {
-        document.getElementById('listings').innerHTML = `<pre>Request failed: ${err}</pre>`;
+        document.getElementById('listings').innerHTML = '<pre>Request failed: ' + esc(String(err)) + '</pre>';
       } finally {
-        btn.disabled = false; btn.textContent = '2. Generate listings';
+        btn.disabled = false; btn.textContent = 'Generate listings';
       }
     });
 
     function renderAnalysis() {
       const a = current.analysis;
-      document.getElementById('analysisBox').innerHTML = `
-        <div class="row"><span>Item</span><b>${esc(a.item_type)}</b></div>
-        <div class="row"><span>Brand</span><b>${esc(a.brand || '—')}</b></div>
-        <div class="row"><span>Condition</span><b>${esc(a.condition)}</b></div>
-        <div class="row"><span>Estimated value</span><b>$${esc(a.estimated_price_low)}–$${esc(a.estimated_price_high)}</b></div>
-        <div class="row"><span>Confidence</span><b>${esc(a.confidence)}</b></div>
-      `;
+      document.getElementById('analysisBox').innerHTML =
+        '<div class="card" style="max-width:none;">'
+        + rowLine('Item', a.item_type)
+        + rowLine('Brand', a.brand || '—')
+        + rowLine('Condition', a.condition)
+        + rowLine('Estimated value', '$' + a.estimated_price_low + '–$' + a.estimated_price_high)
+        + rowLine('Confidence', a.confidence)
+        + '</div>';
       document.getElementById('genBtn').style.display = 'inline-block';
+    }
+    function rowLine(label, value) {
+      return '<div class="row"><span>' + esc(label) + '</span><b>' + esc(value) + '</b></div>';
     }
 
     function renderListings() {
@@ -384,18 +506,18 @@
       const hasListings = Object.keys(current.listings || {}).length > 0;
       heading.style.display = hasListings ? 'block' : 'none';
       if (!hasListings) { listingsBox.innerHTML = ''; return; }
-      listingsBox.innerHTML = Object.entries(current.listings).map(([platform, d]) => `
-        <div class="listing-card" data-platform="${escAttr(platform)}">
-          <h3>${esc(platform)} ${d.posted ? '· <span style="color:#54704A;">Posted ✓</span>' : ''}</h3>
-          <input data-field="title" value="${escAttr(d.title || '')}">
-          <textarea data-field="description">${esc(d.description || '')}</textarea>
-          <div class="actions">
-            <span>$</span><input class="price-input" data-field="price" value="${escAttr(d.price)}">
-            <button data-action="save">Save</button>
-            <label style="margin-left:auto;"><input type="checkbox" data-field="posted" ${d.posted ? 'checked' : ''}> posted</label>
-          </div>
-        </div>
-      `).join('');
+      listingsBox.innerHTML = Object.entries(current.listings).map(([platform, d]) => {
+        return '<div class="listing-card" data-platform="' + escAttr(platform) + '">'
+          + '<h3>' + esc(platform) + (d.posted ? ' · <span style="color:#248a3d;">Posted ✓</span>' : '') + '</h3>'
+          + '<input data-field="title" value="' + escAttr(d.title || '') + '" autocomplete="off">'
+          + '<textarea data-field="description">' + esc(d.description || '') + '</textarea>'
+          + '<div class="actions">'
+          + '<span>$</span><input class="price-input" data-field="price" value="' + escAttr(d.price) + '">'
+          + '<button data-action="save">Save</button>'
+          + '<label style="margin-left:auto;display:flex;align-items:center;gap:5px;"><input type="checkbox" data-field="posted"' + (d.posted ? ' checked' : '') + '> posted</label>'
+          + '</div>'
+          + '</div>';
+      }).join('');
 
       listingsBox.querySelectorAll('.listing-card').forEach(card => {
         const platform = card.dataset.platform;
@@ -409,7 +531,7 @@
       const description = card.querySelector('[data-field="description"]').value;
       const price = Number(card.querySelector('[data-field="price"]').value);
       const posted = card.querySelector('[data-field="posted"]').checked;
-      const res = await api(`/api/drafts/${current.id}`, {
+      const res = await api('/api/drafts/' + current.id, {
         method: 'PUT', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ listings: { [platform]: { title, description, price, posted } } }),
       });
@@ -427,23 +549,21 @@
       draftList.innerHTML = drafts.map(d => {
         const n = Object.keys(d.listings).length;
         const posted = Object.values(d.listings).filter(l => l.posted).length;
-        const status = n ? `${posted} of ${n} posted` : 'Not drafted yet';
-        return `
-          <div class="draft-item" data-id="${escAttr(d.id)}">
-            <img src="${escAttr(d.thumb || '')}" alt="">
-            <div class="meta">
-              <div class="name">${esc(d.analysis.item_type)}</div>
-              <div class="status">${esc(status)}</div>
-            </div>
-            <button class="del" data-del="${escAttr(d.id)}">✕</button>
-          </div>
-        `;
-      }).join('') || '<p style="color:#7a7268;font-size:12.5px;">No drafts yet — scan a photo to create your first listing.</p>';
+        const status = n ? (posted + ' of ' + n + ' posted') : 'Not drafted yet';
+        return '<div class="draft-item" data-id="' + escAttr(d.id) + '">'
+          + '<img src="' + escAttr(d.thumb || '') + '" alt="">'
+          + '<div class="meta">'
+          + '<div class="name">' + esc(d.analysis.item_type) + '</div>'
+          + '<div class="status">' + esc(status) + '</div>'
+          + '</div>'
+          + '<button class="del" data-del="' + escAttr(d.id) + '">✕</button>'
+          + '</div>';
+      }).join('') || '<p style="color:#6e6e73;font-size:13px;">No drafts yet — scan a photo to create your first listing.</p>';
 
       draftList.querySelectorAll('.draft-item').forEach(el => {
         el.addEventListener('click', async (e) => {
           if (e.target.closest('[data-del]')) return;
-          const res = await api(`/api/drafts/${el.dataset.id}`);
+          const res = await api('/api/drafts/' + el.dataset.id);
           if (!res.ok) return;
           current = await res.json();
           renderAnalysis();
@@ -453,7 +573,7 @@
       draftList.querySelectorAll('[data-del]').forEach(btn => {
         btn.addEventListener('click', async (e) => {
           e.stopPropagation();
-          await api(`/api/drafts/${btn.dataset.del}`, { method: 'DELETE' });
+          await api('/api/drafts/' + btn.dataset.del, { method: 'DELETE' });
           loadDraftList();
         });
       });

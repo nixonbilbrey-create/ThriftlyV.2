@@ -57,7 +57,7 @@ no key baked into the server. That's the point.
 **Auth**
 | Method | Path | Does what |
 |---|---|---|
-| POST | `/api/auth/signup` | `{email, password}` → creates the account, returns `{token, user}` |
+| POST | `/api/auth/signup` | `{email, password, agree:true}` — consent to the Privacy Policy is required and recorded (version + timestamp) |
 | POST | `/api/auth/login` | `{email, password}` → `{token, user}` |
 | POST | `/api/auth/logout` | Invalidates the current session |
 | GET | `/api/auth/me` | Current user + whether a Gemini key is connected |
@@ -71,6 +71,7 @@ All routes below require `Authorization: Bearer <token>`.
 |---|---|---|
 | POST | `/api/account/gemini-key` | `{apiKey}` → validates it live against Google (a free models-list call, not a billed generation), then encrypts and stores it |
 | DELETE | `/api/account/gemini-key` | Removes the stored key |
+| DELETE | `/api/account` | Self-service account deletion: drafts, photos, sessions, tokens, and the user row go immediately (what the privacy policy promises) |
 
 **The pipeline**
 | Method | Path | Does what |
@@ -110,6 +111,13 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   refresh flow. Logging out deletes the row; that's the whole revocation
   story. An hourly cleanup pass purges expired sessions and verification
   tokens from the database.
+- **Consent is enforced per account**: every signup must agree to the Privacy
+  Policy (checked server-side, not just in the UI), and the account records
+  which policy version it accepted. The policy itself is served at
+  `/privacy.html`, and account deletion — also promised there — is a real
+  endpoint. When you revise the policy, bump both the version in
+  `public/privacy.html` and `PRIVACY_VERSION` in `server.js`; existing accounts
+  keep the version they agreed to.
 - **Baseline security headers** are set on every response: nosniff, deny
   framing, a CSP that permits only self + inline scripts/styles (what the
   harness needs), a restrictive referrer policy, and `no-store` on API
