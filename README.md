@@ -102,14 +102,22 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   completing a reset logs out every existing session for the account. With no
   SMTP configured, the reset link is printed to the console and returned as
   `devResetLink` — same crutch as the verification link; don't ship that way.
+  When SMTP IS configured but a send fails, the link is only logged server-side,
+  never handed back through the API, so failure windows can't leak live tokens.
   Completing a reset also marks the account's email verified: setting the
   password required reading that mailbox, which is what verification proves.
 - **Sessions are simple bearer tokens** stored in SQLite, 30-day expiry, no
   refresh flow. Logging out deletes the row; that's the whole revocation
   story. An hourly cleanup pass purges expired sessions and verification
   tokens from the database.
+- **Baseline security headers** are set on every response: nosniff, deny
+  framing, a CSP that permits only self + inline scripts/styles (what the
+  harness needs), a restrictive referrer policy, and `no-store` on API
+  responses. Add an HSTS header once the app sits behind real HTTPS.
 - **Must run behind HTTPS** in anything beyond local testing — tokens,
-  passwords, and API keys all travel in plain headers otherwise.
+  passwords, and API keys all travel in plain headers otherwise. 5xx errors
+  stay generic to the client (details are logged server-side only), so an
+  outage can't leak internals to users.
 - **Photos are stored as files on disk** (under `data/photos/`, configurable
   via `PHOTOS_DIR`), referenced from each draft by a same-origin URL — no more
   multi-megabyte base64 blobs in the database. Uploads get one resize pass

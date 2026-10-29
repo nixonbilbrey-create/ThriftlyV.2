@@ -293,6 +293,53 @@ async function resizeFlow() {
   );
 }
 
+// Security: when SMTP is configured but fails (dead relay), setup/reset links
+// must NOT appear in API responses — tokens must only ever be logged server-side.
+// Runs against its own server child on another port with a refused SMTP relay.
+async function smtpFailureFlow() {
+  const PORT2 = 3124;
+  const smtpChild = spawn('node', ['server.js'], {
+    env: {
+      ...process.env,
+      PORT: String(PORT2),
+      DB_PATH: `${TEST_DIR}/smtp.db`,
+      PHOTOS_DIR: `${TEST_DIR}/photos`,
+      BASE_URL: `http://127.0.0.1:${PORT2}`,
+      SMTP_HOST: '127.0.0.1',
+      SMTP_PORT: '1',       // nothing listens — connection refused, fails fast
+      SMTP_FROM: 'noreply@thriftly.test',
+    },
+    stdio: 'ignore',
+  });
+  const B2 = `http://127.0.0.1:${PORT2}`;
+  try {
+    const end = Date.now() + 10000;
+    while (Date.now() < end) {
+      try { if ((await fetch(`${B2}/api/health`)).ok) break; } catch { /* not up yet */ }
+      await sleep(150);
+    }
+    const signup = await fetch(`${B2}/api/auth/signup`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email: 'smtpfail@test.dev', password: 'smtp-fail-pass-1', agree: true }),
+    });
+    const body = await json(signup);
+    assert.equal(signup.status, 201, `signup should still 201 when the send fails (got ${signup.status})`);
+    assert.ok(!body.devVerifyLink, 'failed SMTP send must NOT leak the verification link in the API response');
+    const reset = await json(await fetch(`${B2}/api/auth/request-reset`, {
+      method: 'POST', headers: plainHeaders, body: JSON.stringify({ email: 'smtpfail@test.dev' }),
+    }));
+    assert.ok(!reset.devResetLink, 'failed SMTP send must NOT leak the reset link in the API response');
+    // the token still exists server-side: re-requesting and then succeeding via dev links isn't
+    // testable without a real relay, so we only assert the API surface stays clean
+  } finally {
+    smtpChild.kill('SIGTERM');
+    await sleep(300);
+    rmSync(`${TEST_DIR}/smtp.db`, { force: true });
+    rmSync(`${TEST_DIR}/smtp.db-shm`, { force: true });
+    rmSync(`${TEST_DIR}/smtp.db-wal`, { force: true });
+  }
+}
+
 async function limiterChecks() {
   // Runs last: the authLimiter (shared by signup/resend/request-reset,
   // 10/hour/IP) is deliberately exhausted here so nothing earlier is affected.
@@ -332,6 +379,9 @@ try {
   const t25 = Date.now();
   await resizeFlow();
   console.log(`  ok   photo resize/compress (${Date.now() - t25}ms)`);
+  const t26 = Date.now();
+  await smtpFailureFlow();
+  console.log(`  ok   smtp failure keeps links private (${Date.now() - t26}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);

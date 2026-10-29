@@ -36,6 +36,29 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+// ---------- baseline security headers ----------
+// Registered FIRST so static file responses get them too. Kept explicit rather
+// than pulled in via helmet: the app renders inline scripts, so its CSP must
+// allow exactly that and nothing more. You'll want an HSTS header on top of
+// these once the app runs behind real HTTPS.
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+  res.set('Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; " +
+    "base-uri 'self'; form-action 'self'");
+  // Don't let browsers or shared caches hold onto per-user API responses; the
+  // photo route sets its own (long-lived) caching and is treated as uncachable
+  // user data still — unguessable ids instead of ACLs.
+  if (req.path.startsWith('/api/') && !req.path.startsWith('/api/photos/')) {
+    res.set('Cache-Control', 'no-store');
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: '8mb' }));
 
@@ -97,10 +120,18 @@ function verifyPageHtml({ ok, message }) {
 
 function sendError(res, err) {
   console.error(err);
+  // 5xx means something blew up server-side (Gemini outage, unexpected crash) —
+  // the full error lives in the server log only; the client gets a generic line
+  // so internals never leak. 4xx errors are user-actionable by contract:
+  // message/detail/raw come straight through so the harness and real pages can
+  // show exactly what went wrong with the user's own input or key.
+  if ((err.status || 500) >= 500) {
+    return res.status(err.status || 500).json({ error: 'Something went wrong — try again in a moment' });
+  }
   const body = { error: err.message || 'Server error' };
   if (err.detail) body.detail = err.detail;
   if (err.raw) body.raw = err.raw;
-  res.status(err.status || 500).json(body);
+  res.status(err.status).json(body);
 }
 
 // ============ AUTH ============

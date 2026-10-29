@@ -29,12 +29,17 @@ function buildTransport() {
   });
 }
 
-// Shared sending core: handles the dev fallback and the failed-send fallback the
-// same way for both kinds of email. Returns { sent, transportError }.
+// Shared sending core. Returns { sent, devLinkAllowed, transportError }:
+// - devLinkAllowed: true only when SMTP isn't configured at all (dev mode) —
+//   the caller may surface the link in the API response then, and ONLY then.
+// - When SMTP is configured but the send fails, the link is logged server-side
+//   and NOT returned to the API caller. Returning live verify/reset tokens to
+//   whoever called the API would be an account-takeover hole (imagine an
+//   attacker triggering a password reset exactly while your SMTP is failing).
 async function sendAppEmail({ email, subject, text, html }) {
   if (!smtpConfigured()) {
     console.log(`[mailer] SMTP not configured — ${subject} for ${email}:`);
-    return { sent: false, transportError: null };
+    return { sent: false, devLinkAllowed: true, transportError: null };
   }
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
   try {
@@ -45,13 +50,11 @@ async function sendAppEmail({ email, subject, text, html }) {
       text,
       html,
     });
-    return { sent: true, transportError: null };
+    return { sent: true, devLinkAllowed: false, transportError: null };
   } catch (err) {
-    // Send failed but SMTP is configured — same fallback as dev mode so the user
-    // isn't stuck: link is logged and returned, never lost.
     console.error(`[mailer] Failed to send "${subject}" to ${email}:`, err.message);
-    console.log(`[mailer] ${subject} link for ${email}:`);
-    return { sent: false, transportError: err.message };
+    console.log(`[mailer] ${subject} link for ${email} (logged here, NOT returned to the API caller):`);
+    return { sent: false, devLinkAllowed: false, transportError: err.message };
   }
 }
 
@@ -76,15 +79,17 @@ function verificationEmailHtml(verifyUrl) {
 }
 
 async function sendVerificationEmail(email, verifyUrl) {
-  const { sent } = await sendAppEmail({
+  const result = await sendAppEmail({
     email,
     subject: 'Verify your Thriftly email',
     text: `Welcome to Thriftly!\n\nVerify your email address by opening this link (valid for 24 hours):\n${verifyUrl}\n\nIf you didn't create a Thriftly account, you can ignore this email.`,
     html: verificationEmailHtml(verifyUrl),
   });
-  if (!sent) {
+  if (!result.sent) {
     console.log(`  ${verifyUrl}`);
-    return { sent: false, devLink: verifyUrl };
+    // devLink only in dev mode (no SMTP configured) — see sendAppEmail.
+    if (result.devLinkAllowed) return { sent: false, devLink: verifyUrl };
+    return { sent: false };
   }
   return { sent: true };
 }
@@ -110,15 +115,16 @@ function passwordResetEmailHtml(resetUrl) {
 }
 
 async function sendPasswordResetEmail(email, resetUrl) {
-  const { sent } = await sendAppEmail({
+  const result = await sendAppEmail({
     email,
     subject: 'Reset your Thriftly password',
     text: `Someone (hopefully you) asked to reset the Thriftly password for this address.\n\nSet a new password by opening this link — it's valid for 1 hour and can only be used once:\n${resetUrl}\n\nIf you didn't request this, you can ignore this email; your current password stays as it was.`,
     html: passwordResetEmailHtml(resetUrl),
   });
-  if (!sent) {
+  if (!result.sent) {
     console.log(`  ${resetUrl}`);
-    return { sent: false, devLink: resetUrl };
+    if (result.devLinkAllowed) return { sent: false, devLink: resetUrl };
+    return { sent: false };
   }
   return { sent: true };
 }
