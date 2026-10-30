@@ -1,0 +1,34 @@
+# Render Blueprints spec — deploy with "New +" → Blueprint, or the manifest is
+# picked up automatically. The disk is the important part: everything durable
+# (SQLite db + photo files) lives under /app/data, so a single 1 GB disk keeps
+# all user data across deploys and restarts.
+services:
+  - type: web
+    name: thriftly
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: thriftly-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: ENCRYPTION_KEY
+        sync: false # 64-char hex: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      - key: BASE_URL
+        sync: false # set AFTER first deploy to the onrender.com (or custom) URL so email links point at the right origin
+      - key: SMTP_HOST
+        sync: false # e.g. smtp-relay.brevo.com
+      - key: SMTP_PORT
+        sync: false # 587
+      - key: SMTP_SECURE
+        sync: false # false for STARTTLS on 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false # your verified sender address
+      - key: GEMINI_MODEL
+        sync: false # optional override; defaults in gemini.js
+    autoDeploy: true

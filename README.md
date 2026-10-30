@@ -138,6 +138,55 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   so an S3/R2 backend can replace the filesystem without touching anything
   else.
 
+## Deploying (Render profile)
+
+The app is a long-running Node process with its own SQLite db + photo
+files, so it needs a container host with a persistent disk — Render is
+the reference target here (starter plan + 1 GB disk ≈ $7.25/mo).
+Everything durable lives under `data/` by default (SQLite at
+`data/thriftly.db`, photos in `data/photos/`), so the Render disk
+mounts once at `/app/data` and covers both. `render.yaml` declares it;
+`Dockerfile` builds the image (multi-stage, build tools only in the
+build layer).
+
+**Environment variables** (all read from `process.env`, listed in
+`.env.example`; on Render they sit in the dashboard, never in the
+image):
+
+| Variable | Required | What it does |
+|---|---|---|
+| `ENCRYPTION_KEY` | yes | 64-char hex (32 bytes); encrypts each user's Gemini key at rest. Server refuses to start without it |
+| `BASE_URL` | after first deploy | Public origin used to build verification/reset email links |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | for real email | SMTP relay (e.g. `smtp-relay.brevo.com`, 587, `false` for STARTTLS). Absent → dev mode prints links and returns them in API responses — do not ship that way |
+| `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |
+| `GEMINI_MODEL` | optional | Model override (default `gemini-3.5-flash`) |
+| `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
+| `PORT` | optional | Listen port (Render injects it; defaults to 10000 in Docker, 3001 locally) |
+
+**Deploy checklist**
+
+1. `git init` a GitHub repo and push this code to it (Render deploys
+   from git or a container registry).
+2. In Render: "New +" → Blueprint → pick the repo; the `render.yaml`
+   pre-fills the service, health check (`/api/health`) and the 1 GB
+   disk at `/app/data`.
+3. Generate a fresh `ENCRYPTION_KEY` for this environment
+   (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
+   and fill in the `SMTP_*` values in Render → Environment.
+4. First deploy → note the `*.onrender.com` URL → set `BASE_URL` to it
+   (or your custom domain) → redeploy so email links point at the
+   right origin. Passthrough deploys won't change the disk mount.
+5. Smoke-test the live deploy: `/api/health`, a full signup → verify
+   email → login flow, a photo scan, and a password reset with SMTP.
+6. Add a custom domain in Render → Settings → Networking (HTTPS cert
+   is managed). HTTP behind the proxy is fine — the HSTS header is the
+   one to add on top.
+
+**Backups:** a mounted disk is not a backup — the first thing to set
+up is an off-provider job (cron → `sqlite3 data/thriftly.db .backup` to
+object storage, or Render disk snapshots) plus the usual Render
+practice of never treating the disk as the only copy of the data.
+
 ## What changed from the single-user version
 
 - `analysis`/`listings` on a draft are unchanged in shape.

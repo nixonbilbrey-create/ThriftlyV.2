@@ -1,0 +1,14 @@
+node_modules
+data
+data-test
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+server.log
+server.pid
+tests
+Dockerfile
+render.yaml
+README.md

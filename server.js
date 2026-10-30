@@ -39,6 +39,12 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 const PRIVACY_VERSION = '2026-10-23';
 
 const app = express();
+// The app always runs behind a TLS-terminating proxy in production (Render,
+// preview host, etc.) that forwards the client's real IP in X-Forwarded-For.
+// 'trust proxy', 1 trusts exactly one hop, resolving the client IP correctly;
+// without it express-rate-limit 8 hard-errors on forwarded requests
+// (ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
+app.set('trust proxy', 1);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 // ---------- baseline security headers ----------
 // Registered FIRST so static file responses get them too. Kept explicit rather
