@@ -57,8 +57,9 @@ app.use((req, res, next) => {
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
   res.set('Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; " +
+    "default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com; " +
+    "frame-src https://challenges.cloudflare.com; object-src 'none'; frame-ancestors 'none'; " +
     "base-uri 'self'; form-action 'self'");
   // Don't let browsers or shared caches hold onto per-user API responses; the
   // photo route sets its own (long-lived) caching and is treated as uncachable
@@ -144,14 +145,43 @@ function sendError(res, err) {
   res.status(err.status).json(body);
 }
 
+// ---------- signup CAPTCHA (Cloudflare Turnstile) ----------
+// Off unless TURNSTILE_SECRET is set. The site key is public (served to the
+// browser); the secret stays server-side and is used only against Turnstile's
+// siteverify endpoint. Fail closed: if Cloudflare can't be reached, signup is
+// refused rather than silently skipping the check.
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
+const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET || '';
+const TURNSTILE_VERIFY_URL = process.env.TURNSTILE_VERIFY_URL || 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+
+app.get('/api/config', (req, res) => res.json({ turnstileSiteKey: TURNSTILE_SITE_KEY || null }));
+
+async function verifyCaptcha(token, remoteip) {
+  if (!TURNSTILE_SECRET) return { ok: true }; // not configured — dev / tests
+  if (!token) return { ok: false, error: 'Please complete the CAPTCHA check' };
+  try {
+    const body = new URLSearchParams({ secret: TURNSTILE_SECRET, response: String(token) });
+    if (remoteip) body.set('remoteip', remoteip);
+    const response = await fetch(TURNSTILE_VERIFY_URL, { method: 'POST', body });
+    const data = await response.json().catch(() => ({}));
+    if (!data.success) return { ok: false, error: 'CAPTCHA check failed — please try again' };
+    return { ok: true };
+  } catch (err) {
+    console.error('[captcha] siteverify unreachable:', err.message);
+    return { ok: false, status: 503, error: 'CAPTCHA service is unavailable — try again in a moment' };
+  }
+}
+
 // ============ AUTH ============
 app.post('/api/auth/signup', authLimiter, async (req, res) => {
-  const { email, password, agree } = req.body || {};
+  const { email, password, agree, captchaToken } = req.body || {};
   if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required' });
   if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   // Consent is enforced server-side, not just by the UI checkbox — an API caller
   // can't create an account that never accepted the privacy policy.
   if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy to create an account' });
+  const captcha = await verifyCaptcha(captchaToken, req.ip);
+  if (!captcha.ok) return res.status(captcha.status || 400).json({ error: captcha.error });
   if (getUserByEmail(db, email)) return res.status(409).json({ error: 'An account with that email already exists' });
 
   const id = crypto.randomBytes(8).toString('hex');
@@ -187,19 +217,42 @@ app.get('/api/auth/verify-email', (req, res) => {
   res.send(verifyPageHtml({ ok: true, message: 'Your email is verified. You can log in now.' }));
 });
 
+// Resend cooldown: at most one verification email per address per minute. The
+// timestamp is recorded for every address that asks — existing or not — so the
+// throttle's response can't be used to probe which emails have accounts.
+const RESEND_COOLDOWN_MS = 60 * 1000;
+const resendSentAt = new Map();
+
+function resendRetryAfterSeconds(email) {
+  const last = resendSentAt.get(email);
+  if (!last) return 0;
+  return Math.ceil(Math.max(0, RESEND_COOLDOWN_MS - (Date.now() - last)) / 1000);
+}
+
 app.post('/api/auth/resend-verification', authLimiter, async (req, res) => {
   const { email } = req.body || {};
+  const key = String(email || '').trim().toLowerCase();
+  const retryAfter = key ? resendRetryAfterSeconds(key) : 0;
+  if (retryAfter > 0) {
+    return res.status(429).json({ error: `Please wait ${retryAfter}s before requesting another verification email`, retryAfter });
+  }
   // Always the same response, whether or not the account exists or is already verified —
   // don't let this endpoint be used to check who has an account.
   const generic = { message: 'If that email needs verifying, we just sent a new link.' };
-  const user = email && getUserByEmail(db, email);
+  if (!key) return res.json(generic);
+  resendSentAt.set(key, Date.now());
+  if (resendSentAt.size > 500) {
+    for (const [addr, ts] of resendSentAt) if (Date.now() - ts > RESEND_COOLDOWN_MS) resendSentAt.delete(addr);
+  }
+
+  const user = getUserByEmail(db, key);
   if (!user || user.email_verified) return res.json(generic);
 
   deleteEmailVerificationsForUser(db, user.id);
   const token = newToken();
   createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
   const verifyUrl = `${BASE_URL}/api/auth/verify-email?token=${token}`;
-  const mail = await sendVerificationEmail(email, verifyUrl);
+  const mail = await sendVerificationEmail(key, verifyUrl);
   res.json({ ...generic, devVerifyLink: mail.sent ? undefined : mail.devLink });
 });
 

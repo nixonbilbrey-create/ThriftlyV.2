@@ -415,12 +415,78 @@ async function smtpFailureFlow() {
     assert.ok(!reset.devResetLink, 'failed SMTP send must NOT leak the reset link in the API response');
     // the token still exists server-side: re-requesting and then succeeding via dev links isn't
     // testable without a real relay, so we only assert the API surface stays clean
+
+    // resend cooldown: one verification email per address per minute, and the
+    // throttle applies even to addresses with no account (no enumeration signal)
+    const r1 = await fetch(`${B2}/api/auth/resend-verification`, {
+      method: 'POST', headers: plainHeaders, body: JSON.stringify({ email: 'smtpfail@test.dev' }),
+    });
+    assert.equal(r1.status, 200, 'first resend must be allowed');
+    assert.ok(!(await json(r1)).devVerifyLink, 'failed SMTP send must not leak the verification link either');
+    const r2 = await fetch(`${B2}/api/auth/resend-verification`, {
+      method: 'POST', headers: plainHeaders, body: JSON.stringify({ email: 'smtpfail@test.dev' }),
+    });
+    assert.equal(r2.status, 429, 'second resend inside the cooldown must 429');
+    const r2body = await json(r2);
+    assert.ok(r2body.retryAfter > 0 && r2body.retryAfter <= 60, 'cooldown must report retryAfter seconds');
+    const ghost1 = await fetch(`${B2}/api/auth/resend-verification`, {
+      method: 'POST', headers: plainHeaders, body: JSON.stringify({ email: 'ghost-cooldown@test.dev' }),
+    });
+    assert.equal(ghost1.status, 200, 'unknown address first resend stays generic 200');
+    const ghost2 = await fetch(`${B2}/api/auth/resend-verification`, {
+      method: 'POST', headers: plainHeaders, body: JSON.stringify({ email: 'ghost-cooldown@test.dev' }),
+    });
+    assert.equal(ghost2.status, 429, 'unknown addresses share the same cooldown — no enumeration difference');
   } finally {
     smtpChild.kill('SIGTERM');
     await sleep(300);
     rmSync(`${TEST_DIR}/smtp.db`, { force: true });
     rmSync(`${TEST_DIR}/smtp.db-shm`, { force: true });
     rmSync(`${TEST_DIR}/smtp.db-wal`, { force: true });
+  }
+}
+
+// CAPTCHA gate: with TURNSTILE_SECRET configured, signup must be refused without
+// a token, and the public config exposes only the site key (never the secret).
+async function captchaFlow() {
+  const PORT3 = 3125;
+  const child3 = spawn('node', ['server.js'], {
+    env: {
+      ...process.env,
+      PORT: String(PORT3),
+      DB_PATH: `${TEST_DIR}/captcha.db`,
+      PHOTOS_DIR: `${TEST_DIR}/photos`,
+      BASE_URL: `http://127.0.0.1:${PORT3}`,
+      TURNSTILE_SITE_KEY: 'test-site-key',
+      TURNSTILE_SECRET: 'test-secret',
+    },
+    stdio: 'ignore',
+  });
+  const B3 = `http://127.0.0.1:${PORT3}`;
+  try {
+    const end = Date.now() + 10000;
+    while (Date.now() < end) {
+      try { if ((await fetch(`${B3}/api/health`)).ok) break; } catch { /* not up yet */ }
+      await sleep(150);
+    }
+    const cfg = await json(await fetch(`${B3}/api/config`));
+    assert.equal(cfg.turnstileSiteKey, 'test-site-key', 'public config must expose the site key');
+    assert.equal(cfg.turnstileSecret, undefined, 'public config must never expose the secret');
+    const csp = (await fetch(`${B3}/`)).headers.get('content-security-policy') || '';
+    assert.ok(csp.includes('challenges.cloudflare.com'), 'CSP must allow the Turnstile script/frame');
+
+    const noToken = await fetch(`${B3}/api/auth/signup`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email: 'captcha@test.dev', password: 'captcha-pass-1', agree: true }),
+    });
+    assert.equal(noToken.status, 400, 'signup without a CAPTCHA token must 400');
+    assert.match((await json(noToken)).error || '', /CAPTCHA/, 'error must name the CAPTCHA');
+  } finally {
+    child3.kill('SIGTERM');
+    await sleep(300);
+    rmSync(`${TEST_DIR}/captcha.db`, { force: true });
+    rmSync(`${TEST_DIR}/captcha.db-shm`, { force: true });
+    rmSync(`${TEST_DIR}/captcha.db-wal`, { force: true });
   }
 }
 
@@ -472,6 +538,9 @@ try {
   const t26 = Date.now();
   await smtpFailureFlow();
   console.log(`  ok   smtp failure keeps links private (${Date.now() - t26}ms)`);
+  const tCapt = Date.now();
+  await captchaFlow();
+  console.log(`  ok   signup captcha gate (${Date.now() - tCapt}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);

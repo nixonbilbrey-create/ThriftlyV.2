@@ -128,6 +128,7 @@
         <input type="checkbox" id="agree">
         <span>I agree to the <a class="link" href="/privacy.html" target="_blank">Privacy Policy</a>.</span>
       </label>
+      <div id="captchaBox" style="display:none;margin:4px 0;"></div>
       <div class="err" id="authErr"></div>
       <div class="msg" id="authMsg"></div>
       <div id="devLinkBox" style="display:none;margin:4px 0;"></div>
@@ -244,6 +245,7 @@
       });
       document.getElementById('authSubmit').textContent = signupMode ? 'Create account' : 'Log in';
       document.getElementById('agreeRow').style.display = signupMode ? 'flex' : 'none';
+      document.getElementById('captchaBox').style.display = signupMode ? 'block' : 'none';
       document.getElementById('password').placeholder = signupMode ? 'Password (min 8 characters)' : 'Password';
       document.getElementById('password').autocomplete = signupMode ? 'new-password' : 'current-password';
       document.getElementById('authErr').textContent = '';
@@ -275,13 +277,16 @@
         return;
       }
       try {
+        const payload = { email, password, agree: signupMode };
+        if (signupMode && captchaToken) payload.captchaToken = captchaToken;
         const res = await fetch(signupMode ? '/api/auth/signup' : '/api/auth/login', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email, password, agree: signupMode }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json();
         if (!res.ok) {
           errBox.textContent = data.error || 'Something went wrong';
+          if (signupMode) resetCaptcha(); // Turnstile tokens are single-use
           if (data.needsVerification) resendToggle.style.display = 'block';
           return;
         }
@@ -299,19 +304,76 @@
       }
     });
 
+    // ---------- CAPTCHA (Cloudflare Turnstile — only when configured) ----------
+    let captchaToken = '';
+    let turnstileWidgetId = null;
+    function resetCaptcha() {
+      captchaToken = '';
+      if (turnstileWidgetId !== null && window.turnstile) window.turnstile.reset(turnstileWidgetId);
+    }
+    async function setupCaptcha() {
+      try {
+        const cfg = await (await fetch('/api/config')).json();
+        if (!cfg.turnstileSiteKey) return; // server has no secret — nothing to render
+        const script = document.createElement('script');
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+        script.async = true; script.defer = true;
+        script.onload = () => {
+          turnstileWidgetId = window.turnstile.render('#captchaBox', {
+            sitekey: cfg.turnstileSiteKey,
+            theme: 'light',
+            callback: (t) => { captchaToken = t; },
+            'expired-callback': () => { captchaToken = ''; },
+          });
+        };
+        document.head.appendChild(script);
+      } catch (err) {
+        console.warn('captcha setup skipped:', err);
+      }
+    }
+    setupCaptcha();
+
+    // ---------- resend verification (server-side cooldown) ----------
+    let resendTimer = null;
+    function startResendCooldown(seconds) {
+      const el = document.getElementById('resendToggle');
+      let left = Math.max(1, Number(seconds) || 60);
+      clearInterval(resendTimer);
+      el.style.pointerEvents = 'none'; el.style.opacity = '0.5';
+      el.textContent = 'Resend in ' + left + 's';
+      resendTimer = setInterval(() => {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(resendTimer);
+          el.textContent = 'Resend verification email';
+          el.style.pointerEvents = ''; el.style.opacity = '';
+        } else {
+          el.textContent = 'Resend in ' + left + 's';
+        }
+      }, 1000);
+    }
     document.getElementById('resendToggle').addEventListener('click', async () => {
       const email = document.getElementById('email').value.trim();
       const msgBox = document.getElementById('authMsg');
+      const errBox = document.getElementById('authErr');
+      errBox.textContent = '';
       try {
         const res = await fetch('/api/auth/resend-verification', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }),
         });
         const data = await res.json();
+        if (res.status === 429) {
+          msgBox.textContent = data.error;
+          startResendCooldown(data.retryAfter || 60);
+          return;
+        }
+        if (!res.ok) { errBox.textContent = data.error || 'Something went wrong'; return; }
         msgBox.textContent = data.message;
         showDevLink(data.devVerifyLink);
+        startResendCooldown(60);
       } catch (err) {
         msgBox.textContent = '';
-        document.getElementById('authErr').textContent = 'Request failed: ' + err;
+        errBox.textContent = 'Request failed: ' + err;
       }
     });
 

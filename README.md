@@ -165,7 +165,13 @@ image):
 | `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |
 | `GEMINI_MODEL` | optional | Model override (default `gemini-3.5-flash`) |
 | `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
+| `TURNSTILE_SITE_KEY` | optional | Cloudflare Turnstile site key — renders the signup CAPTCHA widget |
+| `TURNSTILE_SECRET` | optional | Turnstile secret. When set, signup is refused without a valid challenge (fails closed if Cloudflare is unreachable) |
 | `PORT` | optional | Listen port (Render injects it; defaults to 10000 in Docker, 3001 locally) |
+
+> Turning on Turnstile means Cloudflare sees signup visitors' IP addresses —
+> add Cloudflare to the privacy policy's third-party list (and bump the policy
+> version) before enabling it in production.
 
 **Deploy checklist**
 
