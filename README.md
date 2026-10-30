@@ -182,10 +182,13 @@ image):
    is managed). HTTP behind the proxy is fine — the HSTS header is the
    one to add on top.
 
-**Backups:** a mounted disk is not a backup — the first thing to set
-up is an off-provider job (cron → `sqlite3 data/thriftly.db .backup` to
-object storage, or Render disk snapshots) plus the usual Render
-practice of never treating the disk as the only copy of the data.
+**Backups:** Render snapshots the disk daily (kept 7 days), but a disk is
+not a backup. `npm run backup` writes one checksummed archive of the
+SQLite database (online snapshot, integrity-checked) plus photos, with
+an optional upload hook (`BACKUP_UPLOAD_CMD`) for R2/S3/B2;
+`npm run restore` verifies and restores it. See
+[docs/backup-restore.md](docs/backup-restore.md) for the Render runbook
+and the restore drill — run the drill once before you need it.
 
 ## What changed from the single-user version
 

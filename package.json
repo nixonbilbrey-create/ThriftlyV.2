@@ -6,7 +6,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/smoke.mjs"
+    "test": "node tests/smoke.mjs",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs"
   },
   "engines": {
     "node": ">=18"

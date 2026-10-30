@@ -18,6 +18,7 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json package-lock.json* ./
 COPY server.js db.js auth.js mailer.js gemini.js photos.js ./
+COPY scripts ./scripts
 COPY public ./public
 # Runs as root by default: Render bind-mounts its persistent disk at /app/data
 # root-owned, which a non-root user can't write to without an entrypoint chown.

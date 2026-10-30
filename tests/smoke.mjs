@@ -6,8 +6,8 @@
 // verification links via the dev fallback, bearer tokens). Covers the flows
 // that don't need a real Gemini key: accounts, email verification, password
 // reset, drafts CRUD shape, photo storage/serving, rate limiting.
-import { spawn } from 'node:child_process';
-import { rmSync, mkdirSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
+import { rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 
@@ -341,6 +341,29 @@ async function resizeFlow() {
   );
 }
 
+// Backups: run the real scripts against this run's data, then restore into a
+// fresh directory and prove the snapshot survives the roundtrip.
+async function backupRestoreFlow() {
+  const backupDir = `${TEST_DIR}/backups`;
+  const env = { ...process.env, DB_PATH, PHOTOS_DIR: `${TEST_DIR}/photos`, BACKUP_DIR: backupDir };
+  execFileSync('node', ['scripts/backup.mjs'], { env, stdio: 'pipe' });
+  const archives = readdirSync(backupDir).filter((f) => f.endsWith('.tar.gz'));
+  assert.equal(archives.length, 1, 'backup must produce exactly one archive');
+  const archive = `${backupDir}/${archives[0]}`;
+  assert.ok(existsSync(`${archive}.sha256`), 'backup must write a sha256 sidecar');
+
+  const restored = `${TEST_DIR}/restored-data`;
+  execFileSync('node', ['scripts/restore.mjs', archive, '--target', restored, '--force'], { env, stdio: 'pipe' });
+  const Database = (await import('better-sqlite3')).default;
+  const db = new Database(`${restored}/smoke.db`, { readonly: true });
+  const integrity = db.pragma('integrity_check', { simple: true });
+  const users = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+  db.close();
+  assert.equal(integrity, 'ok', 'restored database must pass integrity_check');
+  assert.ok(users >= 2, `restored database must keep the accounts from earlier flows (got ${users})`);
+  assert.ok(existsSync(`${restored}/photos`), 'restored archive must include the photos directory');
+}
+
 // Security: when SMTP is configured but fails (dead relay), setup/reset links
 // must NOT appear in API responses — tokens must only ever be logged server-side.
 // Runs against its own server child on another port with a refused SMTP relay.
@@ -430,6 +453,9 @@ try {
   const tAbs = Date.now();
   await accountDeleteFlow();
   console.log(`  ok   account deletion (${Date.now() - tAbs}ms)`);
+  const tBk = Date.now();
+  await backupRestoreFlow();
+  console.log(`  ok   backup + restore roundtrip (${Date.now() - tBk}ms)`);
   const t26 = Date.now();
   await smtpFailureFlow();
   console.log(`  ok   smtp failure keeps links private (${Date.now() - t26}ms)`);

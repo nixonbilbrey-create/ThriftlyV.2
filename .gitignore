@@ -7,3 +7,5 @@ data-test/
 *.db-shm
 server.log
 server.pid
+backups/
+*.bundle
