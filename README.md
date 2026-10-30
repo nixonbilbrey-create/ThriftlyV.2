@@ -62,6 +62,7 @@ no key baked into the server. That's the point.
 |---|---|---|
 | POST | `/api/auth/signup` | `{email, password, agree:true}` — consent to the Privacy Policy is required and recorded (version + timestamp) |
 | POST | `/api/auth/login` | `{email, password}` → `{token, user}` |
+| POST | `/api/auth/consent` | `{agree:true}` → records acceptance of the current Privacy Policy version (used when the policy changes) |
 | POST | `/api/auth/logout` | Invalidates the current session |
 | GET | `/api/auth/me` | Current user + whether a Gemini key is connected |
 | POST | `/api/auth/request-reset` | `{email}` — always the same response; if the account exists, emails a single-use reset link (valid 1 hour) |

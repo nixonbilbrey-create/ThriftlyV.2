@@ -171,6 +171,12 @@ function setUserPasswordHash(db, userId, passwordHash) {
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId);
 }
 
+// Records acceptance of a policy version (used by the re-consent prompt when the
+// policy moves on after an account was created).
+function setUserConsent(db, userId, version, at) {
+  db.prepare('UPDATE users SET consent_version = ?, consent_at = ? WHERE id = ?').run(version, at, userId);
+}
+
 function deleteSessionsForUser(db, userId) {
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
 }
@@ -276,6 +282,6 @@ module.exports = {
   createSession, getSession, deleteSession, cleanupExpiredSessions, runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
-  setUserPasswordHash, deleteSessionsForUser,
+  setUserPasswordHash, setUserConsent, deleteSessionsForUser,
   listDrafts, getDraft, createDraft, updateDraft, deleteDraft, clearDrafts,
 };

@@ -128,6 +128,30 @@ async function authAndVerifyFlow() {
   const policyPage = await (await fetch(`${BASE}/privacy.html`)).text();
   assert.ok(policyPage.includes(me.policyVersion), 'served policy page version must match the recorded consent version');
 
+  // re-consent: config exposes the current version, a stale account can record
+  // acceptance of it, and the endpoint is authenticated and explicit.
+  const appConfig = await json(await fetch(`${BASE}/api/config`));
+  assert.equal(appConfig.privacyVersion, me.policyVersion, 'config must expose the current policy version');
+  const Database = (await import('better-sqlite3')).default;
+  const testDb = new Database(DB_PATH);
+  testDb.prepare("UPDATE users SET consent_version = '2020-01-01' WHERE email = 'smoke@test.dev'").run();
+  testDb.close();
+  const staleMe = await json(await fetch(`${BASE}/api/auth/me`, { headers: authHeaders(token) }));
+  assert.equal(staleMe.policyVersion, '2020-01-01', 'stale consent version must be visible to the client');
+  const consentNoAgree = await fetch(`${BASE}/api/auth/consent`, {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ agree: false }),
+  });
+  assert.equal(consentNoAgree.status, 400, 're-consent without agree:true must 400');
+  const consent = await fetch(`${BASE}/api/auth/consent`, {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ agree: true }),
+  });
+  assert.equal(consent.status, 200, 're-consent must 200');
+  assert.equal((await json(consent)).policyVersion, appConfig.privacyVersion, 're-consent records the current version');
+  const anonConsent = await fetch(`${BASE}/api/auth/consent`, {
+    method: 'POST', headers: plainHeaders, body: '{"agree":true}',
+  });
+  assert.equal(anonConsent.status, 401, 're-consent requires authentication');
+
   const noAuth = await fetch(`${BASE}/api/auth/me`);
   assert.equal(noAuth.status, 401, 'missing bearer must 401');
   const badAuth = await fetch(`${BASE}/api/auth/me`, { headers: { authorization: 'Bearer deadbeef' } });

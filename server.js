@@ -14,7 +14,7 @@ if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length !== 64) {
 
 const db_ = require('./db');
 const {
-  initDb, createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey, deleteUserRow,
+  initDb, createUser, getUserByEmail, getUserById, publicUser, markUserVerified, setUserGeminiKey, clearUserGeminiKey, deleteUserRow, setUserConsent,
   createSession, getSession, deleteSession, cleanupExpiredSessions, startCleanupLoop,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
@@ -154,7 +154,7 @@ const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET || '';
 const TURNSTILE_VERIFY_URL = process.env.TURNSTILE_VERIFY_URL || 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 
-app.get('/api/config', (req, res) => res.json({ turnstileSiteKey: TURNSTILE_SITE_KEY || null }));
+app.get('/api/config', (req, res) => res.json({ turnstileSiteKey: TURNSTILE_SITE_KEY || null, privacyVersion: PRIVACY_VERSION }));
 
 async function verifyCaptcha(token, remoteip) {
   if (!TURNSTILE_SECRET) return { ok: true }; // not configured — dev / tests
@@ -316,6 +316,16 @@ app.post('/api/auth/logout', auth, (req, res) => {
 
 app.get('/api/auth/me', auth, (req, res) => {
   res.json(publicUser(req.user));
+});
+
+// Re-consent: when the policy version moves past what an account accepted, the
+// UI prompts before the app is usable. This is the recorded acceptance — the
+// version stays server-authoritative (PRIVACY_VERSION), never client-supplied.
+app.post('/api/auth/consent', auth, (req, res) => {
+  const { agree } = req.body || {};
+  if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy to continue' });
+  setUserConsent(db, req.userId, PRIVACY_VERSION, Date.now());
+  res.json(publicUser(getUserById(db, req.userId)));
 });
 
 // ============ ACCOUNT: Gemini key ============

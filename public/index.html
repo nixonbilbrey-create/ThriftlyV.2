@@ -187,6 +187,21 @@
     </main>
   </div>
 
+  <!-- RE-CONSENT — shown when the policy version moves past what this account accepted -->
+  <div id="reconsentOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.38);backdrop-filter:blur(6px);z-index:60;padding:20px;overflow:auto;">
+    <div class="card" style="max-width:480px;margin:72px auto;box-shadow:0 18px 50px rgba(0,0,0,.25);">
+      <h2 style="margin-top:0;">We've updated our Privacy Policy</h2>
+      <p style="font-size:14px;color:var(--sub);margin:0 0 10px;">The policy is now <b id="reconsentVersion"></b>. Please review it and agree before continuing to use Thriftly.</p>
+      <p style="margin:0 0 12px;"><a class="link" href="/privacy.html" target="_blank" rel="noopener">Read the updated Privacy Policy ↗</a></p>
+      <label class="check" style="display:flex;margin:0 0 6px;">
+        <input type="checkbox" id="reconsentAgree">
+        <span>I agree to the updated Privacy Policy.</span>
+      </label>
+      <div class="err" id="reconsentErr"></div>
+      <button id="reconsentBtn" style="width:100%;">Agree and continue</button>
+    </div>
+  </div>
+
   <p class="foot">Thriftly keeps your data on its own server with no trackers — see the <a class="link" href="/privacy.html">Privacy Policy</a>.</p>
 
   <script>
@@ -423,7 +438,46 @@
       document.getElementById('whoami').textContent = me.email;
       renderKeyStatus();
       loadDraftList();
+      enforceReconsent();
     }
+
+    // ---------- re-consent when the policy version moves on ----------
+    // The current version is served by /api/config; acceptance is recorded by
+    // POST /api/auth/consent and only then does the overlay go away.
+    let appConfig = null;
+    async function loadAppConfig() {
+      if (appConfig) return appConfig;
+      try { appConfig = await (await fetch('/api/config')).json(); } catch (err) { appConfig = {}; }
+      return appConfig;
+    }
+    async function enforceReconsent() {
+      if (!me) return;
+      const cfg = await loadAppConfig();
+      if (!cfg.privacyVersion || me.policyVersion === cfg.privacyVersion) return;
+      document.getElementById('reconsentVersion').textContent = cfg.privacyVersion;
+      document.getElementById('reconsentOverlay').style.display = 'block';
+    }
+    document.getElementById('reconsentBtn').addEventListener('click', async () => {
+      const errBox = document.getElementById('reconsentErr');
+      errBox.textContent = '';
+      if (!document.getElementById('reconsentAgree').checked) {
+        errBox.textContent = 'Please agree to the updated Privacy Policy to continue';
+        return;
+      }
+      const btn = document.getElementById('reconsentBtn');
+      btn.disabled = true;
+      try {
+        const res = await api('/api/auth/consent', { method: 'POST', body: JSON.stringify({ agree: true }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { errBox.textContent = data.error || 'Something went wrong'; return; }
+        me = data;
+        document.getElementById('reconsentOverlay').style.display = 'none';
+      } catch (err) {
+        errBox.textContent = 'Request failed: ' + err;
+      } finally {
+        btn.disabled = false;
+      }
+    });
 
     // ---------- data export (take your data before deleting it) ----------
     document.getElementById('exportDataBtn').addEventListener('click', async () => {
