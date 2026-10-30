@@ -79,6 +79,18 @@ async function authAndVerifyFlow() {
   assert.equal(signup.status, 201, `signup -> ${signup.status} ${JSON.stringify(signupBody)}`);
   assert.ok(signupBody.devVerifyLink, 'no SMTP → signup must return devVerifyLink');
 
+  // the whole point of emailed verification: no login token exists until the
+  // mailbox is proven — the UI depends on needsVerification to show the resend
+  // affordance.
+  const preVerifyLogin = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST', headers: plainHeaders,
+    body: JSON.stringify({ email: 'smoke@test.dev', password: 'smoke-password-1' }),
+  });
+  assert.equal(preVerifyLogin.status, 403, 'login before verification must 403');
+  const preVerifyBody = await json(preVerifyLogin);
+  assert.equal(preVerifyBody.needsVerification, true, 'login before verification must flag needsVerification');
+  assert.equal(preVerifyBody.token, undefined, 'unverified login must not issue a session token');
+
   const dup = await fetch(`${BASE}/api/auth/signup`, {
     method: 'POST', headers: plainHeaders,
     body: JSON.stringify({ email: 'smoke@test.dev', password: 'smoke-password-1', agree: true }),
