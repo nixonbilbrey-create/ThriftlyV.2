@@ -169,9 +169,9 @@ image):
 | `TURNSTILE_SECRET` | optional | Turnstile secret. When set, signup is refused without a valid challenge (fails closed if Cloudflare is unreachable) |
 | `PORT` | optional | Listen port (Render injects it; defaults to 10000 in Docker, 3001 locally) |
 
-> Turning on Turnstile means Cloudflare sees signup visitors' IP addresses —
-> add Cloudflare to the privacy policy's third-party list (and bump the policy
-> version) before enabling it in production.
+> Turning on Turnstile means Cloudflare processes signup visitors' IP
+> addresses — the privacy policy (version 2026-10-30) already discloses it in
+> the third-party list; leaving the keys blank keeps the CAPTCHA off.
 
 **Deploy checklist**
 

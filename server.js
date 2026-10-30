@@ -36,7 +36,7 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 
 // Must match the version shown/dated in public/privacy.html. Bump BOTH when the
 // policy changes — every signup records it, and /api/auth/me reports it back.
-const PRIVACY_VERSION = '2026-10-23';
+const PRIVACY_VERSION = '2026-10-30';
 
 const app = express();
 // The app always runs behind a TLS-terminating proxy in production (Render,

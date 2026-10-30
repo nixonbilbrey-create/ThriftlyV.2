@@ -125,6 +125,8 @@ async function authAndVerifyFlow() {
   assert.equal(me.email, 'smoke@test.dev');
   assert.equal(me.emailVerified, true);
   assert.ok(me.policyVersion && me.policyAcceptedAt, ' consent version + timestamp recorded');
+  const policyPage = await (await fetch(`${BASE}/privacy.html`)).text();
+  assert.ok(policyPage.includes(me.policyVersion), 'served policy page version must match the recorded consent version');
 
   const noAuth = await fetch(`${BASE}/api/auth/me`);
   assert.equal(noAuth.status, 401, 'missing bearer must 401');
