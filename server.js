@@ -283,6 +283,34 @@ app.delete('/api/account/gemini-key', auth, (req, res) => {
   res.status(204).end();
 });
 
+// Self-service data export — the other half of the deletion promise: take your
+// stuff with you before you go. One JSON file with the account (secrets aside),
+// every draft with its analysis/listings, and each photo inline as base64 so the
+// download stands alone once the account is gone.
+app.get('/api/account/export', auth, (req, res) => {
+  const drafts = listDrafts(db, req.userId);
+  const photos = {};
+  for (const draft of drafts) {
+    const photoId = photoIdFromThumb(draft.thumb);
+    if (!photoId || photos[photoId]) continue;
+    const photo = readPhoto(photoId);
+    if (!photo) continue; // file already gone — export what still exists
+    photos[photoId] = { mimetype: photo.mimetype, base64: photo.buffer.toString('base64') };
+  }
+
+  const exportedAt = new Date().toISOString();
+  const payload = {
+    exportedAt,
+    note: 'Thriftly data export. Drafts reference photos by filename; the photo bytes are in "photos" as base64.',
+    account: publicUser(req.user),
+    drafts,
+    photos,
+  };
+  res.set('Content-Type', 'application/json');
+  res.set('Content-Disposition', `attachment; filename="thriftly-export-${exportedAt.slice(0, 10)}.json"`);
+  res.send(JSON.stringify(payload, null, 2));
+});
+
 // Self-service account deletion — the privacy policy promises it, so it's a real
 // endpoint: drafts + their photos, sessions, and every pending token go, then the
 // user row itself. Idempotent-safe: 404 once the account is gone.

@@ -178,7 +178,8 @@
         <h2 style="margin-top:0;">Your drafts</h2>
         <div id="draftList"></div>
         <button class="secondary mini" id="clearAllBtn" style="margin-top:10px;">Clear all</button>
-        <div style="margin-top:22px;">
+        <div style="margin-top:22px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="secondary mini" id="exportDataBtn">Download my data</button>
           <button class="danger mini" id="deleteAccountBtn">Delete account…</button>
         </div>
       </aside>
@@ -361,6 +362,31 @@
       renderKeyStatus();
       loadDraftList();
     }
+
+    // ---------- data export (take your data before deleting it) ----------
+    document.getElementById('exportDataBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('exportDataBtn');
+      btn.disabled = true; btn.textContent = 'Preparing…';
+      try {
+        const res = await api('/api/account/export');
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || 'Export failed — try again');
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'thriftly-export-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      } catch (err) {
+        alert('Export failed: ' + err);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Download my data';
+      }
+    });
 
     // ---------- account deletion ----------
     document.getElementById('deleteAccountBtn').addEventListener('click', async () => {

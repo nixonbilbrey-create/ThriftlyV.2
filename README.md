@@ -71,6 +71,7 @@ All routes below require `Authorization: Bearer <token>`.
 |---|---|---|
 | POST | `/api/account/gemini-key` | `{apiKey}` → validates it live against Google (a free models-list call, not a billed generation), then encrypts and stores it |
 | DELETE | `/api/account/gemini-key` | Removes the stored key |
+| GET | `/api/account/export` | Downloads everything the account owns as one JSON file: profile, drafts with analysis/listings, and photos inline (base64) |
 | DELETE | `/api/account` | Self-service account deletion: drafts, photos, sessions, tokens, and the user row go immediately (what the privacy policy promises) |
 
 **The pipeline**

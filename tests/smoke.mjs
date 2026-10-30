@@ -303,6 +303,19 @@ async function photoAndDraftsFlow(token, otherToken) {
   assert.equal((await fetch(`${BASE}/api/photos/ffffffffffffffffffffffffffffffff.png`)).status, 404, 'unknown photo must 404');
   assert.equal((await fetch(`${BASE}/api/photos/..%2f..%2fetc%2fpasswd`)).status, 404, 'traversal must 404');
 
+  // data export: everything the account owns, photos included, as a download
+  const exportRes = await fetch(`${BASE}/api/account/export`, { headers: authHeaders(token) });
+  assert.equal(exportRes.status, 200, 'export must 200');
+  assert.match(exportRes.headers.get('content-disposition') || '', /attachment/, 'export must be a file download');
+  const exportBody = await json(exportRes);
+  assert.equal(exportBody.account.email, 'smoke@test.dev', 'export must include the account');
+  assert.equal(exportBody.drafts.length, 1, 'export must include the draft');
+  const exportedPhoto = exportBody.photos[photo.url.split('/').pop()];
+  assert.ok(exportedPhoto, 'export must include the photo bytes');
+  assert.equal(Buffer.from(exportedPhoto.base64, 'base64').toString(), 'smoke-photo-bytes-0123456789', 'exported photo bytes must match');
+  const otherExport = await json(await fetch(`${BASE}/api/account/export`, { headers: authHeaders(otherToken) }));
+  assert.ok(!otherExport.drafts.some((d) => d.id === 'smokedraft1'), 'export must not leak another user\'s drafts');
+
   const del = await fetch(`${BASE}/api/drafts/smokedraft1`, { method: 'DELETE', headers: authHeaders(token) });
   assert.equal(del.status, 204, 'draft delete must 204');
   const delForeign = await fetch(`${BASE}/api/drafts/smokedraft1`, { method: 'DELETE', headers: authHeaders(otherToken) });
