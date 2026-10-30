@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: npm test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build -t thriftly:ci .
+
+      # A build that can't boot is false confidence: run the image with the same
+      # port/ENV contract as Render and wait for /api/health to answer.
+      - name: Boot image and check /api/health
+        env:
+          ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        run: |
+          docker run -d --name thriftly-ci -p 3000:10000 -e ENCRYPTION_KEY thriftly:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health; then
+              echo "health OK after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "health check never came up — container logs:"
+          docker logs thriftly-ci
+          exit 1
+      - name: Clean up
+        if: always()
+        run: docker rm -f thriftly-ci || true

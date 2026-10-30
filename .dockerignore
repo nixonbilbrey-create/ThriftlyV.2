@@ -6,6 +6,7 @@ data-test
 !.env.example
 .git
 .gitignore
+.github
 server.log
 server.pid
 tests
