@@ -128,6 +128,13 @@ async function authAndVerifyFlow() {
   const policyPage = await (await fetch(`${BASE}/privacy.html`)).text();
   assert.ok(policyPage.includes(me.policyVersion), 'served policy page version must match the recorded consent version');
 
+  // launch surface: terms page exists, health exposes liveness only (no paths).
+  const termsPage = await (await fetch(`${BASE}/terms.html`)).text();
+  assert.match(termsPage, /Terms of Service/, 'served terms page must exist');
+  const health = await json(await fetch(`${BASE}/api/health`));
+  assert.equal(health.ok, true, 'health must report ok');
+  assert.equal(health.dbPath, undefined, 'health must not leak the database path');
+
   // re-consent: config exposes the current version, a stale account can record
   // acceptance of it, and the endpoint is authenticated and explicit.
   const appConfig = await json(await fetch(`${BASE}/api/config`));

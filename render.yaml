@@ -31,4 +31,17 @@ services:
         sync: false # your verified sender address
       - key: GEMINI_MODEL
         sync: false # optional override; defaults in gemini.js
+      - key: TURNSTILE_SITE_KEY
+        sync: false # public site key — leave blank to keep the CAPTCHA off
+      - key: TURNSTILE_SECRET
+        sync: false # set WITH the site key; fails closed when configured
+      - key: BACKUP_INTERVAL_HOURS
+        value: "24" # nightly in-process backup (Render cron can't read this disk)
+      - key: BACKUP_DIR
+        value: /app/data/backups # inside the mounted disk
+      - key: BACKUP_RETENTION_DAYS
+        value: "7"
+      - key: BACKUP_UPLOAD_CMD
+        sync: false # rclone/aws copy of {file} + {sha256} to off-provider storage
+    maxShutdownDelaySeconds: 30
     autoDeploy: true

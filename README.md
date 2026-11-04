@@ -171,8 +171,13 @@ image):
 | `PORT` | optional | Listen port (Render injects it; defaults to 10000 in Docker, 3001 locally) |
 
 > Turning on Turnstile means Cloudflare processes signup visitors' IP
-> addresses — the privacy policy (version 2026-10-30) already discloses it in
+> addresses — the privacy policy (version 2026-11-04) already discloses it in
 > the third-party list; leaving the keys blank keeps the CAPTCHA off.
+
+**Launch readiness:** [docs/LAUNCH.md](docs/LAUNCH.md) is the ordered
+checklist for a real launch — repo/CI, SMTP, CAPTCHA, Render, backups,
+monitoring and the first post-launch week. Terms of Service live at
+`/terms.html` and are linked from signup alongside the Privacy Policy.
 
 **Deploy checklist**
 
@@ -197,7 +202,10 @@ image):
 not a backup. `npm run backup` writes one checksummed archive of the
 SQLite database (online snapshot, integrity-checked) plus photos, with
 an optional upload hook (`BACKUP_UPLOAD_CMD`) for R2/S3/B2;
-`npm run restore` verifies and restores it. See
+`npm run restore` verifies and restores it. Setting
+`BACKUP_INTERVAL_HOURS=24` (already in `render.yaml`) runs the same backup
+nightly inside the server, because a Render cron job can't read the
+service's disk; keep `BACKUP_DIR` inside `/app/data`. See
 [docs/backup-restore.md](docs/backup-restore.md) for the Render runbook
 and the restore drill — run the drill once before you need it.
 

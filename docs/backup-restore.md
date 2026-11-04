@@ -87,9 +87,19 @@ The image (`node:22-slim`) ships `tar`/`gzip` and Node but **not** `rclone` or
 machine and upload from there. A one-off copy via `scp`/browser download is a
 perfectly valid off-provider backup for low-volume apps.
 
-Until automated, put a recurring reminder in your calendar: **one backup per
-week, uploaded, checksum recorded.** Render unchanged means nothing new, but a
-delete or corruption is discovered late otherwise.
+### Scheduled backups inside the service
+
+`BACKUP_INTERVAL_HOURS=24` (already in `render.yaml`) makes the server run the
+same archive on a schedule, writing to `BACKUP_DIR`. Keep `BACKUP_DIR` inside
+`/app/data` so it survives redeploys. Render's cron jobs are separate services
+and cannot read this service's disk — that's why the schedule lives in the app.
+The scheduler logs `[backup] scheduled …` at boot and `[backup] wrote …` after
+each run; failures are logged and never crash the server.
+
+The schedule only produces the **local** archive. Set `BACKUP_UPLOAD_CMD` (or
+download the archive and upload it yourself) so a copy also exists
+off-provider — otherwise a provider-wide problem loses the app and its backups
+together.
 
 ## Restore drill (do this before you need it)
 
@@ -155,6 +165,8 @@ back, then cross-check against your newest off-provider archive.
 ## What "done" looks like
 
 - [ ] One archive created, checksum verified, and downloaded/uploaded off Render
+- [ ] Nightly scheduler enabled and producing archives (check the log or the
+      `BACKUP_DIR` listing a day after deploy)
 - [ ] Local restore drill (A) passed end-to-end
 - [ ] Upload command (or manual routine) runs on a schedule you'll actually keep
 - [ ] You know your RPO: ≤24 h (snapshots) and up to the last upload (archives)

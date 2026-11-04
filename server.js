@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
+const { version: APP_VERSION } = require('./package.json');
 
 if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length !== 64) {
   console.error(
@@ -26,6 +27,7 @@ const {
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
 const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb } = require('./photos');
+const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
   PLATFORMS, MODEL, testGeminiKey, callGeminiJSON,
@@ -36,7 +38,7 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 
 // Must match the version shown/dated in public/privacy.html. Bump BOTH when the
 // policy changes — every signup records it, and /api/auth/me reports it back.
-const PRIVACY_VERSION = '2026-10-30';
+const PRIVACY_VERSION = '2026-11-04';
 
 const app = express();
 // The app always runs behind a TLS-terminating proxy in production (Render,
@@ -56,6 +58,11 @@ app.use((req, res, next) => {
   res.set('X-Frame-Options', 'DENY');
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+  // HSTS only in production: on a local http:// origin it would pin the browser
+  // to https for localhost and break development.
+  if (process.env.NODE_ENV === 'production') {
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   res.set('Content-Security-Policy',
     "default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com; " +
@@ -72,6 +79,20 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: '8mb' }));
+
+// ---------- request log ----------
+// One line per API call: method, path, status, duration. Path only — never the
+// query string, because reset/verification tokens live there. Health checks are
+// skipped so an uptime monitor doesn't drown the log.
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/') || req.path === '/api/health') return next();
+  const started = process.hrtime.bigint();
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    console.log(`[api] ${req.method} ${req.path} ${res.statusCode} ${ms.toFixed(0)}ms`);
+  });
+  next();
+});
 
 const db = initDb(process.env.DB_PATH);
 cleanupExpiredSessions(db);
@@ -154,6 +175,18 @@ const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET || '';
 const TURNSTILE_VERIFY_URL = process.env.TURNSTILE_VERIFY_URL || 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 
+// Fail loudly at boot (but don't refuse to start: CI and smoke tests run the
+// production image/binary without email or CAPTCHA configured).
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.SMTP_HOST) {
+    console.warn('[startup] SMTP is not configured: verification/reset emails will NOT be delivered and links will be returned in API responses. Do not allow public signups in this state.');
+  }
+  if (!TURNSTILE_SECRET) console.warn('[startup] Turnstile is off: signup CAPTCHA is disabled.');
+  if (!/^https:\/\//.test(BASE_URL)) {
+    console.warn(`[startup] BASE_URL is "${BASE_URL}" — set it to the public https origin before inviting users, or email links will point at the wrong host.`);
+  }
+}
+
 app.get('/api/config', (req, res) => res.json({ turnstileSiteKey: TURNSTILE_SITE_KEY || null, privacyVersion: PRIVACY_VERSION }));
 
 async function verifyCaptcha(token, remoteip) {
@@ -179,7 +212,7 @@ app.post('/api/auth/signup', authLimiter, async (req, res) => {
   if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   // Consent is enforced server-side, not just by the UI checkbox — an API caller
   // can't create an account that never accepted the privacy policy.
-  if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy to create an account' });
+  if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy and Terms of Service to create an account' });
   const captcha = await verifyCaptcha(captchaToken, req.ip);
   if (!captcha.ok) return res.status(captcha.status || 400).json({ error: captcha.error });
   if (getUserByEmail(db, email)) return res.status(409).json({ error: 'An account with that email already exists' });
@@ -502,9 +535,44 @@ app.delete('/api/drafts', auth, (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, model: MODEL, dbPath: db.name }));
+// Health checks are public and unauthenticated: expose liveness only, never
+// filesystem paths or configuration.
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: APP_VERSION, uptime: Math.round(process.uptime()) }));
+
+// ---------- scheduled backups ----------
+// Optional and off by default. On Render, set BACKUP_INTERVAL_HOURS=24 and keep
+// BACKUP_DIR inside the mounted disk (/app/data/backups): a Render cron job is a
+// separate service and cannot read this service's disk. Off-provider upload
+// still needs BACKUP_UPLOAD_CMD (see docs/backup-restore.md).
+const BACKUP_INTERVAL_HOURS = Number(process.env.BACKUP_INTERVAL_HOURS || 0);
+let backupTimer = null;
+if (BACKUP_INTERVAL_HOURS > 0) {
+  const intervalMs = Math.max(5000, Math.round(BACKUP_INTERVAL_HOURS * 60 * 60 * 1000));
+  if (!process.env.BACKUP_DIR) {
+    console.warn('[backup] BACKUP_DIR is not set — archives may live outside the persistent disk and be lost on redeploy.');
+  }
+  backupTimer = setInterval(async () => {
+    try {
+      const result = await runBackup();
+      console.log(`[backup] wrote ${result.name} (${result.sizeMb} MB, ${result.photos} photo file(s))`);
+      for (const file of result.pruned) console.log(`[backup] pruned ${file}`);
+    } catch (err) {
+      console.error('[backup] scheduled backup failed:', err.message);
+    }
+  }, intervalMs);
+  backupTimer.unref();
+  console.log(`[backup] scheduled every ${BACKUP_INTERVAL_HOURS}h into ${process.env.BACKUP_DIR || 'backups/'}`);
+}
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Thriftly backend (multi-user, Gemini-powered) at http://localhost:${PORT}`));
 
-process.on('SIGINT', () => { clearInterval(cleanupTimer); db.close(); process.exit(0); });
+function shutdown(signal) {
+  console.log(`[shutdown] ${signal} — closing database`);
+  clearInterval(cleanupTimer);
+  if (backupTimer) clearInterval(backupTimer);
+  db.close();
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
