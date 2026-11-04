@@ -9,7 +9,8 @@
     "test": "node tests/smoke.mjs",
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs",
-    "seed:demo": "node scripts/seed-demo.mjs"
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "migrate:pg": "node scripts/migrate-to-postgres.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -22,6 +23,8 @@
     "express-rate-limit": "^8.7.0",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.14",
+    "pg": "^8.23.1",
+    "pg": "^8.23.1",
     "sharp": "^0.35.5"
   }
 }
