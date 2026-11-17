@@ -43,5 +43,17 @@ services:
         value: "7"
       - key: BACKUP_UPLOAD_CMD
         sync: false # rclone/aws copy of {file} + {sha256} to off-provider storage
+      # Supabase: when DATABASE_URL is set the app uses Postgres + Storage and
+      # the disk/backup vars above are unused. Set these before relying on
+      # multi-instance deployment; keep the SQLite disk until Postgres has run
+      # cleanly for a full backup cycle (see docs/SUPABASE.md).
+      - key: DATABASE_URL
+        sync: false # Supabase session pooler URI (port 5432), not the direct IPv6 host
+      - key: SUPABASE_URL
+        sync: false # https://<ref>.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # server-only; never expose to the browser
+      - key: SUPABASE_STORAGE_BUCKET
+        value: photos
     maxShutdownDelaySeconds: 30
     autoDeploy: true

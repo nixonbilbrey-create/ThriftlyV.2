@@ -11,6 +11,12 @@ import { rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 
+// Tests always run on SQLite + local disk, even when the developer's .env has
+// DATABASE_URL/Supabase credentials. Children inherit these via ...process.env.
+process.env.DB_FORCE_SQLITE = '1';
+process.env.SUPABASE_URL = '';
+process.env.SUPABASE_SERVICE_ROLE_KEY = '';
+
 const PORT = 3123;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TEST_DIR = 'data-test';
@@ -290,7 +296,7 @@ async function photoAndDraftsFlow(token, otherToken) {
   const { savePhoto } = await import('../photos.js');
   const db = initDb(DB_PATH);
   const user = db.prepare('SELECT id FROM users WHERE email = ?').get('smoke@test.dev');
-  const photo = savePhoto(Buffer.from('smoke-photo-bytes-0123456789'), 'image/jpeg');
+  const photo = await savePhoto(Buffer.from('smoke-photo-bytes-0123456789'), 'image/jpeg');
   const analysis = { item_type: 'test lamp', condition: 'used', estimated_price_low: 5, estimated_price_high: 15, confidence: 'medium' };
   db.prepare(`INSERT INTO drafts (id, user_id, analysis, thumb, listings, selected, created_at, updated_at)
               VALUES ('smokedraft1', ?, ?, ?, '{}', ?, ?, ?)`)

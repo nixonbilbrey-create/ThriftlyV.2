@@ -4,12 +4,15 @@ Thriftly ships on SQLite + a local photo directory. This is the runbook for
 moving it to Supabase Postgres and Supabase Storage, and for deploying the
 result on Render.
 
-**Current status:** the app still runs on SQLite. The schema
-([db/schema.sql](../db/schema.sql)) and the data-copy script
-([scripts/migrate-to-postgres.mjs](../scripts/migrate-to-postgres.mjs)) are
-ready; the async data layer and Storage backend are the next commit. That code
-must be exercised against the real database before it replaces SQLite in
-production.
+**Current status:** the schema and private `photos` bucket are applied to the
+Supabase project. The app now has an async Postgres data layer
+([db-pg.js](../db-pg.js)) and a Supabase Storage photo backend, selected when
+`DATABASE_URL` is set; without it the app still runs on SQLite, which is also
+what the smoke tests use. The async layer is covered by `npm run test:pg`, which builds a throwaway
+schema, exercises every table and drops it again; CI runs it against a local
+`postgres:17` service. It has **not yet been exercised against the live
+project** — run the copy scripts and a full smoke pass with real credentials
+before switching production traffic.
 
 ## 1. Resume the project
 
@@ -78,7 +81,15 @@ DATABASE_URL=... node scripts/migrate-to-postgres.mjs
 The script reads `data/thriftly.db`, upserts every user and draft, copies
 sessions/tokens, verifies per-table counts, and commits only if nothing is
 missing. It is idempotent and safe to re-run. It does **not** copy photos:
-Storage migration is a separate step once the bucket exists.
+run the Storage copy separately once the bucket exists:
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... node scripts/migrate-photos-to-storage.mjs
+```
+
+The photo copy keeps the same object ids, so `draft.thumb` URLs do not change.
+It reads files referenced by the SQLite drafts and upserts them into the
+bucket; it does not touch the database.
 
 Do this during a quiet window, or re-run it immediately before cutover (user
 rows are upserted; tokens are insert-if-absent).

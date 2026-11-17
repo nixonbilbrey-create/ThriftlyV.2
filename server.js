@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+require('express-async-errors');
 const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
@@ -95,9 +96,9 @@ app.use((req, res, next) => {
 });
 
 const db = initDb(process.env.DB_PATH);
-cleanupExpiredSessions(db);
-cleanupExpiredVerifications(db);
-cleanupExpiredPasswordResets(db);
+cleanupExpiredSessions(db).catch(err => console.error('[cleanup] sessions:', err.message));
+cleanupExpiredVerifications(db).catch(err => console.error('[cleanup] verifications:', err.message));
+cleanupExpiredPasswordResets(db).catch(err => console.error('[cleanup] resets:', err.message));
 const cleanupTimer = startCleanupLoop(db); // hourly purge of expired sessions/verification tokens
 const auth = requireAuth(db);
 
@@ -215,16 +216,16 @@ app.post('/api/auth/signup', authLimiter, async (req, res) => {
   if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy and Terms of Service to create an account' });
   const captcha = await verifyCaptcha(captchaToken, req.ip);
   if (!captcha.ok) return res.status(captcha.status || 400).json({ error: captcha.error });
-  if (getUserByEmail(db, email)) return res.status(409).json({ error: 'An account with that email already exists' });
+  if (await getUserByEmail(db, email)) return res.status(409).json({ error: 'An account with that email already exists' });
 
   const id = crypto.randomBytes(8).toString('hex');
-  const user = createUser(db, {
+  const user = await createUser(db, {
     id, email, passwordHash: await hashPassword(password),
     consentVersion: PRIVACY_VERSION, consentAt: Date.now(),
   });
 
   const token = newToken();
-  createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
+  await createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
   const verifyUrl = `${BASE_URL}/api/auth/verify-email?token=${token}`;
   const mail = await sendVerificationEmail(email, verifyUrl);
 
@@ -236,17 +237,17 @@ app.post('/api/auth/signup', authLimiter, async (req, res) => {
   });
 });
 
-app.get('/api/auth/verify-email', (req, res) => {
+app.get('/api/auth/verify-email', async (req, res) => {
   const token = req.query.token;
-  const record = token && getEmailVerification(db, token);
-  if (!record || record.expires_at < Date.now()) {
+  const record = token && await getEmailVerification(db, token);
+  if (!record || Number(record.expires_at) < Date.now()) {
     return res.status(400).send(verifyPageHtml({
       ok: false,
       message: 'This verification link is invalid or has expired. Go back and use "Resend verification email" to get a new one.',
     }));
   }
-  markUserVerified(db, record.user_id);
-  deleteEmailVerificationsForUser(db, record.user_id);
+  await markUserVerified(db, record.user_id);
+  await deleteEmailVerificationsForUser(db, record.user_id);
   res.send(verifyPageHtml({ ok: true, message: 'Your email is verified. You can log in now.' }));
 });
 
@@ -278,12 +279,12 @@ app.post('/api/auth/resend-verification', authLimiter, async (req, res) => {
     for (const [addr, ts] of resendSentAt) if (Date.now() - ts > RESEND_COOLDOWN_MS) resendSentAt.delete(addr);
   }
 
-  const user = getUserByEmail(db, key);
+  const user = await getUserByEmail(db, key);
   if (!user || user.email_verified) return res.json(generic);
 
-  deleteEmailVerificationsForUser(db, user.id);
+  await deleteEmailVerificationsForUser(db, user.id);
   const token = newToken();
-  createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
+  await createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
   const verifyUrl = `${BASE_URL}/api/auth/verify-email?token=${token}`;
   const mail = await sendVerificationEmail(key, verifyUrl);
   res.json({ ...generic, devVerifyLink: mail.sent ? undefined : mail.devLink });
@@ -294,13 +295,13 @@ app.post('/api/auth/request-reset', authLimiter, async (req, res) => {
   // Same generic response whether or not the account exists — combined with the
   // authLimiter (10/hour/IP), this can't be used to check who has an account.
   const generic = { message: 'If that email has a Thriftly account, we just sent a password-reset link.' };
-  const user = email && getUserByEmail(db, email);
+  const user = email && await getUserByEmail(db, email);
   if (!user) return res.json(generic);
 
   // Only the newest link per user is ever valid — requesting again voids earlier ones.
-  deletePasswordResetsForUser(db, user.id);
+  await deletePasswordResetsForUser(db, user.id);
   const token = newToken();
-  createPasswordReset(db, { token, userId: user.id, expiresAt: Date.now() + PASSWORD_RESET_TTL_MS });
+  await createPasswordReset(db, { token, userId: user.id, expiresAt: Date.now() + PASSWORD_RESET_TTL_MS });
   const resetUrl = `${BASE_URL}/set-password.html?token=${token}`;
   const mail = await sendPasswordResetEmail(user.email, resetUrl);
   res.json({ ...generic, devResetLink: mail.sent ? undefined : mail.devLink });
@@ -308,26 +309,26 @@ app.post('/api/auth/request-reset', authLimiter, async (req, res) => {
 
 app.post('/api/auth/set-password', async (req, res) => {
   const { token, password } = req.body || {};
-  const record = token && getPasswordReset(db, token);
-  if (!record || record.expires_at < Date.now()) {
+  const record = token && await getPasswordReset(db, token);
+  if (!record || Number(record.expires_at) < Date.now()) {
     return res.status(400).json({ error: 'This reset link is invalid or has expired — request a new one from the login page.' });
   }
   if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
 
   const passwordHash = await hashPassword(password);
-  setUserPasswordHash(db, record.user_id, passwordHash);
-  deletePasswordResetsForUser(db, record.user_id);
+  await setUserPasswordHash(db, record.user_id, passwordHash);
+  await deletePasswordResetsForUser(db, record.user_id);
   // Whoever set a password just proved they control the mailbox — the same thing
   // email verification proves — so treat the account as verified too.
-  markUserVerified(db, record.user_id);
+  await markUserVerified(db, record.user_id);
   // The old password is gone; log out every existing session (all devices).
-  deleteSessionsForUser(db, record.user_id);
+  await deleteSessionsForUser(db, record.user_id);
   res.json({ ok: true, message: 'Password updated — you can log in with the new password now.' });
 });
 
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body || {};
-  const user = email ? getUserByEmail(db, email) : null;
+  const user = email ? await getUserByEmail(db, email) : null;
   // Always run exactly one bcrypt compare — against a fixed dummy hash when the email
   // doesn't exist — so response timing can't be used to enumerate accounts.
   const passwordOk = await verifyPassword(password || '', user ? user.password_hash : DUMMY_HASH);
@@ -338,12 +339,12 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     return res.status(403).json({ error: 'Please verify your email before logging in', needsVerification: true });
   }
   const token = newToken();
-  createSession(db, { token, userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
+  await createSession(db, { token, userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
   res.json({ token, user: publicUser(user) });
 });
 
-app.post('/api/auth/logout', auth, (req, res) => {
-  deleteSession(db, req.token);
+app.post('/api/auth/logout', auth, async (req, res) => {
+  await deleteSession(db, req.token);
   res.status(204).end();
 });
 
@@ -354,11 +355,11 @@ app.get('/api/auth/me', auth, (req, res) => {
 // Re-consent: when the policy version moves past what an account accepted, the
 // UI prompts before the app is usable. This is the recorded acceptance — the
 // version stays server-authoritative (PRIVACY_VERSION), never client-supplied.
-app.post('/api/auth/consent', auth, (req, res) => {
+app.post('/api/auth/consent', auth, async (req, res) => {
   const { agree } = req.body || {};
   if (agree !== true) return res.status(400).json({ error: 'You must agree to the Privacy Policy to continue' });
-  setUserConsent(db, req.userId, PRIVACY_VERSION, Date.now());
-  res.json(publicUser(getUserById(db, req.userId)));
+  await setUserConsent(db, req.userId, PRIVACY_VERSION, Date.now());
+  res.json(publicUser(await getUserById(db, req.userId)));
 });
 
 // ============ ACCOUNT: Gemini key ============
@@ -367,15 +368,15 @@ app.post('/api/account/gemini-key', auth, async (req, res) => {
   if (!apiKey || apiKey.length < 10) return res.status(400).json({ error: 'A Gemini API key is required' });
   try {
     await testGeminiKey(apiKey); // cheap call — lists models, doesn't burn generation quota
-    setUserGeminiKey(db, req.userId, encrypt(apiKey));
+    await setUserGeminiKey(db, req.userId, encrypt(apiKey));
     res.json({ connected: true });
   } catch (err) {
     sendError(res, err);
   }
 });
 
-app.delete('/api/account/gemini-key', auth, (req, res) => {
-  clearUserGeminiKey(db, req.userId);
+app.delete('/api/account/gemini-key', auth, async (req, res) => {
+  await clearUserGeminiKey(db, req.userId);
   res.status(204).end();
 });
 
@@ -383,13 +384,13 @@ app.delete('/api/account/gemini-key', auth, (req, res) => {
 // stuff with you before you go. One JSON file with the account (secrets aside),
 // every draft with its analysis/listings, and each photo inline as base64 so the
 // download stands alone once the account is gone.
-app.get('/api/account/export', auth, (req, res) => {
-  const drafts = listDrafts(db, req.userId);
+app.get('/api/account/export', auth, async (req, res) => {
+  const drafts = await listDrafts(db, req.userId);
   const photos = {};
   for (const draft of drafts) {
     const photoId = photoIdFromThumb(draft.thumb);
     if (!photoId || photos[photoId]) continue;
-    const photo = readPhoto(photoId);
+    const photo = await readPhoto(photoId);
     if (!photo) continue; // file already gone — export what still exists
     photos[photoId] = { mimetype: photo.mimetype, base64: photo.buffer.toString('base64') };
   }
@@ -410,16 +411,16 @@ app.get('/api/account/export', auth, (req, res) => {
 // Self-service account deletion — the privacy policy promises it, so it's a real
 // endpoint: drafts + their photos, sessions, and every pending token go, then the
 // user row itself. Idempotent-safe: 404 once the account is gone.
-app.delete('/api/account', auth, (req, res) => {
-  for (const draft of listDrafts(db, req.userId)) {
+app.delete('/api/account', auth, async (req, res) => {
+  for (const draft of await listDrafts(db, req.userId)) {
     const photoId = photoIdFromThumb(draft.thumb);
-    if (photoId) deletePhoto(photoId);
+    if (photoId) await deletePhoto(photoId);
   }
-  clearDrafts(db, req.userId);
-  deleteSessionsForUser(db, req.userId);
-  deleteEmailVerificationsForUser(db, req.userId);
-  deletePasswordResetsForUser(db, req.userId);
-  deleteUserRow(db, req.userId);
+  await clearDrafts(db, req.userId);
+  await deleteSessionsForUser(db, req.userId);
+  await deleteEmailVerificationsForUser(db, req.userId);
+  await deletePasswordResetsForUser(db, req.userId);
+  await deleteUserRow(db, req.userId);
   res.status(204).end();
 });
 
@@ -457,8 +458,8 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
     });
 
     // Photo stored as a resized file, referenced by URL — see photos.js.
-    const { url } = savePhoto(normalized.buffer, normalized.mimetype);
-    const draft = createDraft(db, req.userId, { analysis, thumb: url, selected: PLATFORMS });
+    const { url } = await savePhoto(normalized.buffer, normalized.mimetype);
+    const draft = await createDraft(db, req.userId, { analysis, thumb: url, selected: PLATFORMS });
     res.status(201).json(draft);
   } catch (err) {
     sendError(res, err);
@@ -471,7 +472,7 @@ app.post('/api/drafts/:id/generate-listing', auth, async (req, res) => {
     const apiKey = usersGeminiKey(req.user);
     if (!apiKey) return res.status(400).json({ error: 'Connect your Gemini API key in Settings before generating listings' });
 
-    const existing = getDraft(db, req.userId, req.params.id);
+    const existing = await getDraft(db, req.userId, req.params.id);
     if (!existing) return res.status(404).json({ error: 'Draft not found' });
 
     const generated = await callGeminiJSON({
@@ -486,7 +487,7 @@ app.post('/api/drafts/:id/generate-listing', auth, async (req, res) => {
       listingsPatch[platform] = { ...generated[platform], posted: existing.listings[platform]?.posted || false };
     }
 
-    res.json(updateDraft(db, req.userId, req.params.id, { listings: listingsPatch }));
+    res.json(await updateDraft(db, req.userId, req.params.id, { listings: listingsPatch }));
   } catch (err) {
     sendError(res, err);
   }
@@ -496,48 +497,55 @@ app.post('/api/drafts/:id/generate-listing', auth, async (req, res) => {
 
 // Photo serving doesn't need a Bearer token: <img> tags can't send headers, and
 // the ids are 128-bit random names — unguessable, therefore effectively ACL'd.
-app.get('/api/photos/:id', (req, res) => {
-  const photo = readPhoto(req.params.id);
+app.get('/api/photos/:id', async (req, res) => {
+  const photo = await readPhoto(req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   res.set('Content-Type', photo.mimetype);
   res.set('Cache-Control', 'private, max-age=31536000, immutable'); // content never changes for a given id
   res.send(photo.buffer);
 });
-app.get('/api/drafts', auth, (req, res) => res.json(listDrafts(db, req.userId)));
+app.get('/api/drafts', auth, async (req, res) => res.json(await listDrafts(db, req.userId)));
 
-app.get('/api/drafts/:id', auth, (req, res) => {
-  const draft = getDraft(db, req.userId, req.params.id);
+app.get('/api/drafts/:id', auth, async (req, res) => {
+  const draft = await getDraft(db, req.userId, req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   res.json(draft);
 });
 
-app.put('/api/drafts/:id', auth, (req, res) => {
-  const updated = updateDraft(db, req.userId, req.params.id, req.body || {});
+app.put('/api/drafts/:id', auth, async (req, res) => {
+  const updated = await updateDraft(db, req.userId, req.params.id, req.body || {});
   if (!updated) return res.status(404).json({ error: 'Draft not found' });
   res.json(updated);
 });
 
-app.delete('/api/drafts/:id', auth, (req, res) => {
-  const existing = getDraft(db, req.userId, req.params.id);
+app.delete('/api/drafts/:id', auth, async (req, res) => {
+  const existing = await getDraft(db, req.userId, req.params.id);
   if (!existing) return res.status(404).json({ error: 'Draft not found' });
-  deleteDraft(db, req.userId, req.params.id);
+  await deleteDraft(db, req.userId, req.params.id);
   const photoId = photoIdFromThumb(existing.thumb);
-  if (photoId) deletePhoto(photoId); // best-effort: the draft row is already gone
+  if (photoId) await deletePhoto(photoId); // best-effort: the draft row is already gone
   res.status(204).end();
 });
 
-app.delete('/api/drafts', auth, (req, res) => {
-  for (const draft of listDrafts(db, req.userId)) {
+app.delete('/api/drafts', auth, async (req, res) => {
+  for (const draft of await listDrafts(db, req.userId)) {
     const photoId = photoIdFromThumb(draft.thumb);
-    if (photoId) deletePhoto(photoId);
+    if (photoId) await deletePhoto(photoId);
   }
-  clearDrafts(db, req.userId);
+  await clearDrafts(db, req.userId);
   res.status(204).end();
 });
 
 // Health checks are public and unauthenticated: expose liveness only, never
 // filesystem paths or configuration.
 app.get('/api/health', (_req, res) => res.json({ ok: true, version: APP_VERSION, uptime: Math.round(process.uptime()) }));
+
+// Async route/middleware failures reach one place; sendError keeps 5xx details
+// in the server log and 4xx messages client-actionable.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  sendError(res, err);
+});
 
 // ---------- scheduled backups ----------
 // Optional and off by default. On Render, set BACKUP_INTERVAL_HOURS=24 and keep
@@ -546,7 +554,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, version: APP_VERSION,
 // still needs BACKUP_UPLOAD_CMD (see docs/backup-restore.md).
 const BACKUP_INTERVAL_HOURS = Number(process.env.BACKUP_INTERVAL_HOURS || 0);
 let backupTimer = null;
-if (BACKUP_INTERVAL_HOURS > 0) {
+if (BACKUP_INTERVAL_HOURS > 0 && db.kind !== 'pg') {
   const intervalMs = Math.max(5000, Math.round(BACKUP_INTERVAL_HOURS * 60 * 60 * 1000));
   if (!process.env.BACKUP_DIR) {
     console.warn('[backup] BACKUP_DIR is not set — archives may live outside the persistent disk and be lost on redeploy.');
@@ -562,16 +570,22 @@ if (BACKUP_INTERVAL_HOURS > 0) {
   }, intervalMs);
   backupTimer.unref();
   console.log(`[backup] scheduled every ${BACKUP_INTERVAL_HOURS}h into ${process.env.BACKUP_DIR || 'backups/'}`);
+} else if (BACKUP_INTERVAL_HOURS > 0) {
+  console.log('[backup] Postgres backend — use Supabase backups/PITR instead of the SQLite scheduler');
 }
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Thriftly backend (multi-user, Gemini-powered) at http://localhost:${PORT}`));
 
-function shutdown(signal) {
+async function shutdown(signal) {
   console.log(`[shutdown] ${signal} — closing database`);
   clearInterval(cleanupTimer);
   if (backupTimer) clearInterval(backupTimer);
-  db.close();
+  try {
+    await db.close();
+  } catch (err) {
+    console.error('[shutdown] close failed:', err.message);
+  }
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));

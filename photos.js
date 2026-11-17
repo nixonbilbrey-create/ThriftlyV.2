@@ -1,34 +1,21 @@
+'use strict';
 // ---------- photo storage ----------
-// Photos used to live in SQLite as (full-size) base64 data URIs, which bloated
-// the database and every backup with megabyte-plus text blobs. Now they're
-// files on disk, referenced by an unguessable 128-bit id in drafts.thumb's URL.
+// Photos live either in a private Supabase Storage bucket (production) or on
+// local disk (development/tests). The rest of the app only knows the four async
+// functions below; /api/photos/:id serves the bytes in both modes, so the
+// browser never talks to Supabase directly and no credentials reach the client.
 //
-// This is the ONLY module that knows how photos are stored. If the app outgrows
-// single-server disk storage, replace it with an S3/R2 backend that exposes the
-// same four functions — server.js and db.js need no further changes.
-//
-// Serving: GET /api/photos/:id returns the bytes. The id is a 128-bit random
-// hex name (no directory traversal possible, and the ids are not guessable,
-// which is why the route doesn't need auth — <img> tags can't send Bearer
-// headers, so an auth requirement there would mean signed URLs instead).
-// Tradeoff: draft image URLs work in any browser, not just the owner's —
-// acceptable at this scale precisely because the ids are cryptographically
-// unguessable, and worth revisiting if these images ever become sensitive.
-
+// Storage object names are the same unguessable 128-bit ids used on disk, which
+// keeps existing draft.thumb URLs valid across the migration.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const sharp = require('sharp');
 
 // ---------- photo processing (resize/compress before storing) ----------
-// Still full-color for the model, but no longer multi-megabyte: longest edge
-// capped at MAX_EDGE, re-encoded as JPEG. Saves SQLite-adjacent disk, network
-// room in the Gemini upload, and page-load weight on the drafts sidebar.
 const MAX_EDGE = 1400; // px, longest edge after resizing
 const JPEG_QUALITY = 82;
 
-// Returns { buffer, mimetype } for the normalized image, or rejects on a
-// non-decodable upload (caller turns that into a 400).
 async function shrink(buffer) {
   const normalized = await sharp(buffer)
     .rotate() // auto-applies EXIF orientation so sideways phone photos stay upright
@@ -53,19 +40,73 @@ const MIME_FOR_EXT = Object.fromEntries(Object.entries(EXT_FOR_MIME).map(([m, e]
 
 const PHOTOS_DIR = process.env.PHOTOS_DIR || path.join(__dirname, 'data', 'photos');
 
-// How a stored photo is named/validated: 32 hex chars + a short extension.
+// 32 hex chars + a short extension.
 const PHOTO_ID_RE = /^[a-f0-9]{32}\.(jpg|png|gif|webp)$/;
+
+function storageConfig() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  return {
+    url: url.replace(/\/+$/, ''),
+    key,
+    bucket: process.env.SUPABASE_STORAGE_BUCKET || 'photos',
+  };
+}
+
+function storageEnabled() {
+  return Boolean(storageConfig());
+}
 
 function ensureDir() {
   fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 }
 
-// Store a photo; returns the filename (the "id") and the URL to hand to clients.
-function savePhoto(buffer, mimetype) {
+async function storageRequest(photoId, options = {}) {
+  const config = storageConfig();
+  if (!config) throw new Error('Supabase Storage is not configured');
+  const response = await fetch(
+    `${config.url}/storage/v1/object/${encodeURIComponent(config.bucket)}/${encodeURIComponent(photoId)}`,
+    {
+      ...options,
+      headers: {
+        authorization: `Bearer ${config.key}`,
+        ...(options.headers || {}),
+      },
+    },
+  );
+  return response;
+}
+
+// Store a photo under an explicit id (used by savePhoto and the local-to-
+// Storage migration). Upserts, so re-running a migration is safe.
+async function putPhoto(photoId, buffer, mimetype) {
+  if (!isValidPhotoId(photoId)) throw new Error('invalid photo id');
+  const config = storageConfig();
+  if (config) {
+    const response = await storageRequest(photoId, {
+      method: 'POST',
+      headers: {
+        'content-type': mimetype || 'application/octet-stream',
+        'x-upsert': 'true',
+      },
+      body: buffer,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`Supabase Storage upload failed (${response.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    }
+    return;
+  }
   ensureDir();
+  fs.writeFileSync(path.join(PHOTOS_DIR, photoId), buffer);
+}
+
+// Store a photo; returns the filename (the "id") and the URL to hand to clients.
+async function savePhoto(buffer, mimetype) {
   const ext = EXT_FOR_MIME[mimetype] || 'png';
   const photoId = crypto.randomBytes(16).toString('hex') + '.' + ext;
-  fs.writeFileSync(path.join(PHOTOS_DIR, photoId), buffer);
+  await putPhoto(photoId, buffer, mimetype);
   return { photoId, url: `/api/photos/${photoId}` };
 }
 
@@ -80,9 +121,17 @@ function photoIdFromThumb(thumb) {
   return match ? match[1] : null;
 }
 
-// Read a stored photo back; null if the id is malformed or the file is missing.
-function readPhoto(photoId) {
+async function readPhoto(photoId) {
   if (!isValidPhotoId(photoId)) return null;
+  const config = storageConfig();
+  if (config) {
+    const response = await storageRequest(photoId, { method: 'GET' });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Supabase Storage read failed (${response.status})`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const mimetype = response.headers.get('content-type') || MIME_FOR_EXT[path.extname(photoId).slice(1)] || 'application/octet-stream';
+    return { buffer, mimetype };
+  }
   try {
     const buffer = fs.readFileSync(path.join(PHOTOS_DIR, photoId));
     const mimetype = MIME_FOR_EXT[path.extname(photoId).slice(1)] || 'application/octet-stream';
@@ -93,9 +142,16 @@ function readPhoto(photoId) {
   }
 }
 
-// best-effort delete — a missing file is fine; a write failure is not silenced.
-function deletePhoto(photoId) {
+// best-effort delete — a missing object is fine; a write failure is not silenced.
+async function deletePhoto(photoId) {
   if (!isValidPhotoId(photoId)) return false;
+  const config = storageConfig();
+  if (config) {
+    const response = await storageRequest(photoId, { method: 'DELETE' });
+    if (response.status === 404) return false;
+    if (!response.ok) throw new Error(`Supabase Storage delete failed (${response.status})`);
+    return true;
+  }
   try {
     fs.unlinkSync(path.join(PHOTOS_DIR, photoId));
     return true;
@@ -105,4 +161,7 @@ function deletePhoto(photoId) {
   }
 }
 
-module.exports = { shrink, savePhoto, readPhoto, deletePhoto, isValidPhotoId, photoIdFromThumb, PHOTOS_DIR };
+module.exports = {
+  shrink, savePhoto, putPhoto, readPhoto, deletePhoto,
+  isValidPhotoId, photoIdFromThumb, storageEnabled, PHOTOS_DIR,
+};

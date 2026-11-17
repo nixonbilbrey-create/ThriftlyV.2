@@ -1,6 +1,6 @@
-# Thriftly — Express + SQLite (better-sqlite3) + sharp
-# Runtime honors PORT (Render injects it); disk is mounted over /app/data,
-# which is where the SQLite db and photo files live by default.
+# Thriftly — Express + Postgres/SQLite + sharp
+# Runtime honors PORT (Render injects it). With DATABASE_URL the app uses
+# Supabase Postgres + Storage; otherwise /app/data holds the SQLite db + photos.
 FROM node:22-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ \
@@ -17,7 +17,7 @@ ENV PORT=10000
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json package-lock.json* ./
-COPY server.js db.js auth.js mailer.js gemini.js photos.js ./
+COPY server.js db.js db-pg.js auth.js mailer.js gemini.js photos.js ./
 COPY scripts ./scripts
 COPY public ./public
 # Runs as root by default: Render bind-mounts its persistent disk at /app/data

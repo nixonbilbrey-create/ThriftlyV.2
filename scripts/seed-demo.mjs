@@ -110,42 +110,42 @@ async function main() {
   const db = initDb(process.env.DB_PATH);
 
   // Reset: remove the previous demo account and its photos so re-runs are clean.
-  const existing = getUserByEmail(db, EMAIL);
+  const existing = await getUserByEmail(db, EMAIL);
   if (existing) {
-    for (const draft of listDrafts(db, existing.id)) {
+    for (const draft of await listDrafts(db, existing.id)) {
       const photoId = photoIdFromThumb(draft.thumb);
-      if (photoId) deletePhoto(photoId);
+      if (photoId) await deletePhoto(photoId);
     }
-    clearDrafts(db, existing.id);
-    deleteSessionsForUser(db, existing.id);
-    deleteEmailVerificationsForUser(db, existing.id);
-    deletePasswordResetsForUser(db, existing.id);
-    deleteUserRow(db, existing.id);
+    await clearDrafts(db, existing.id);
+    await deleteSessionsForUser(db, existing.id);
+    await deleteEmailVerificationsForUser(db, existing.id);
+    await deletePasswordResetsForUser(db, existing.id);
+    await deleteUserRow(db, existing.id);
   }
 
   const id = crypto.randomBytes(8).toString('hex');
-  const user = createUser(db, {
+  const user = await createUser(db, {
     id, email: EMAIL, passwordHash: await hashPassword(PASSWORD),
     consentVersion: CONSENT_VERSION, consentAt: Date.now(),
   });
-  markUserVerified(db, user.id);
+  await markUserVerified(db, user.id);
 
-  const coat = savePhoto(await coatPhoto(), 'image/jpeg');
-  const coatDraft = createDraft(db, user.id, {
+  const coat = await savePhoto(await coatPhoto(), 'image/jpeg');
+  const coatDraft = await createDraft(db, user.id, {
     analysis: coatAnalysis, thumb: coat.url, selected: PLATFORMS,
   });
-  const listed = updateDraft(db, user.id, coatDraft.id, {
+  await updateDraft(db, user.id, coatDraft.id, {
     listings: Object.fromEntries(Object.entries(coatListings).map(([platform, fields]) => [
       platform, { ...fields, posted: platform === 'Vinted' },
     ])),
   });
 
-  const sneakers = savePhoto(await sneakerPhoto(), 'image/jpeg');
-  createDraft(db, user.id, {
+  const sneakers = await savePhoto(await sneakerPhoto(), 'image/jpeg');
+  await createDraft(db, user.id, {
     analysis: sneakerAnalysis, thumb: sneakers.url, selected: PLATFORMS,
   });
 
-  db.close();
+  await db.close();
   console.log('demo account ready');
   console.log(`  email:    ${EMAIL}`);
   console.log(`  password: ${PASSWORD}`);

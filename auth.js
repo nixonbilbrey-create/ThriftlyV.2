@@ -55,22 +55,26 @@ function decrypt(payload) {
 // Reads "Authorization: Bearer <token>", looks the session up, attaches req.userId / req.user.
 function requireAuth(db) {
   const { getSession, getUserById } = require('./db');
-  return (req, res, next) => {
-    const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    if (!token) return res.status(401).json({ error: 'Missing Authorization header (Bearer token)' });
+  return async (req, res, next) => {
+    try {
+      const header = req.headers.authorization || '';
+      const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+      if (!token) return res.status(401).json({ error: 'Missing Authorization header (Bearer token)' });
 
-    const session = getSession(db, token);
-    if (!session || session.expires_at < Date.now()) {
-      return res.status(401).json({ error: 'Invalid or expired session — log in again' });
+      const session = await getSession(db, token);
+      if (!session || Number(session.expires_at) < Date.now()) {
+        return res.status(401).json({ error: 'Invalid or expired session — log in again' });
+      }
+      const user = await getUserById(db, session.user_id);
+      if (!user) return res.status(401).json({ error: 'User not found' });
+
+      req.token = token;
+      req.userId = user.id;
+      req.user = user;
+      next();
+    } catch (err) {
+      next(err);
     }
-    const user = getUserById(db, session.user_id);
-    if (!user) return res.status(401).json({ error: 'User not found' });
-
-    req.token = token;
-    req.userId = user.id;
-    req.user = user;
-    next();
   };
 }
 
