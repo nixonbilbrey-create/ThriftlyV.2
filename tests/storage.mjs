@@ -507,6 +507,17 @@ async function migrationFlow(storage) {
   assert.equal(pngUpload.contentType, 'image/png', 'png photos keep their type');
   assert.equal(jpegUpload.auth, `Bearer ${SERVICE_KEY}`, 'the copy authenticates with the service key');
 
+  // The point of keeping the id: a draft's existing /api/photos URL resolves to
+  // the copied object with no database change, served by the running app out of
+  // the bucket. The missing id is the negative control — it must not resolve.
+  const served = await fetch(`${BASE}/api/photos/${jpegId}`);
+  assert.equal(served.status, 200, 'a draft URL written before the copy still serves');
+  assert.deepEqual(Buffer.from(await served.arrayBuffer()), jpegBytes, 'and serves the migrated bytes');
+  assert.equal(
+    (await fetch(`${BASE}/api/photos/${missingId}`)).status, 404,
+    'a photo that was never copied does not resolve — so the 200 above means something',
+  );
+
   // A draft whose file is gone fails the run after copying what it can — the
   // runbook relies on that non-zero exit to notice a partial copy.
   const withMissing = new Database(dbPath);
