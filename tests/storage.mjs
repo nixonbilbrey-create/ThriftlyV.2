@@ -15,7 +15,7 @@
 // which nothing else exercises.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
@@ -31,32 +31,44 @@ const plainHeaders = { 'content-type': 'application/json' };
 const authHeaders = (token) => ({ ...plainHeaders, authorization: `Bearer ${token}` });
 const json = async (res) => { try { return await res.json(); } catch { return {}; } };
 
-// ---------- fake Supabase Storage ----------
-// Implements exactly the subset photos.js calls. Every request is recorded so
-// the test can assert on method, bucket, auth header, upsert flag and type.
+// ---------- fakes ----------
+// One loopback server on a random port, returning its origin.
+function listen(handler) {
+  const server = http.createServer(handler);
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve({ server, url: `http://127.0.0.1:${server.address().port}` });
+    });
+  });
+}
+
+// Minimal Supabase Storage API: the subset photos.js calls, and it enforces the
+// contract the real service enforces (service-role bearer, known bucket). A
+// client that stops sending them fails here instead of passing on a recorded
+// header nobody asserted.
 function startFakeStorage() {
   const objects = new Map(); // object name -> { bytes, contentType }
-  const requests = [];       // { method, path, auth, upsert, contentType, bytes }
-  const state = { fail: false };
+  const requests = [];       // { method, path, auth, upsert, contentType }
+  let failing = false;
 
-  const server = http.createServer((req, res) => {
+  const handler = (req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       const body = Buffer.concat(chunks);
       const url = new URL(req.url, 'http://127.0.0.1');
+      const auth = req.headers.authorization || null;
       requests.push({
         method: req.method,
         path: url.pathname,
-        auth: req.headers.authorization || null,
+        auth,
         upsert: req.headers['x-upsert'] || null,
         contentType: req.headers['content-type'] || null,
-        bytes: body.length,
       });
 
       // Test control plane: simulate a Storage outage on demand.
       if (url.pathname === '/__control/fail') {
-        state.fail = body.toString('utf8').trim() !== 'none';
+        failing = body.toString('utf8').trim() !== 'none';
         res.writeHead(204);
         return res.end();
       }
@@ -66,13 +78,17 @@ function startFakeStorage() {
         res.writeHead(404, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: 'unknown route' }));
       }
+      if (auth !== `Bearer ${SERVICE_KEY}`) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'InvalidJWT' }));
+      }
       const bucket = decodeURIComponent(match[1]);
       const name = decodeURIComponent(match[2]);
       if (bucket !== BUCKET) {
         res.writeHead(400, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: `bucket not found: ${bucket}` }));
       }
-      if (state.fail) {
+      if (failing) {
         res.writeHead(500, { 'content-type': 'text/plain' });
         return res.end('storage is down');
       }
@@ -104,13 +120,9 @@ function startFakeStorage() {
       res.writeHead(405);
       res.end();
     });
-  });
+  };
 
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      resolve({ server, objects, requests, url: `http://127.0.0.1:${server.address().port}` });
-    });
-  });
+  return listen(handler).then(({ server, url }) => ({ server, url, objects, requests }));
 }
 
 // ---------- fake Gemini ----------
@@ -135,12 +147,10 @@ function startFakeGemini() {
     suggested_keywords: ['scarf', 'wool', 'grey', 'winter'],
   };
 
-  const server = http.createServer((req, res) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
+  const handler = (req, res) => {
+    req.resume(); // no response depends on the request body
     req.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf8');
-      requests.push({ method: req.method, path: req.url, key: req.headers['x-goog-api-key'] || null, body });
+      requests.push({ path: req.url, key: req.headers['x-goog-api-key'] || null });
 
       if (req.method === 'GET' && req.url === '/v1beta/models') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -155,13 +165,9 @@ function startFakeGemini() {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: `unknown route ${req.method} ${req.url}` } }));
     });
-  });
+  };
 
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}` });
-    });
-  });
+  return listen(handler).then(({ server, url }) => ({ server, url, requests }));
 }
 
 function closeServer(server) {
@@ -204,10 +210,12 @@ async function storageClientChecks(storage) {
   assert.deepEqual(read.buffer, Buffer.from('first-bytes'), 'read returns the stored bytes');
   assert.equal(read.mimetype, 'image/jpeg');
 
-  // Upsert: the same id can be rewritten (what the local→Storage copy does).
+  // Upsert: the same id is rewritten in place (what the local→Storage copy does).
   await putPhoto(saved.photoId, Buffer.from('second-bytes'), 'image/png');
   assert.deepEqual(storage.objects.get(saved.photoId).bytes, Buffer.from('second-bytes'), 'putPhoto overwrites in place');
-  assert.equal(storage.objects.size, 1, 'upsert must not create a second object');
+  const rewrites = storage.requests.filter((r) => r.method === 'POST' && r.path.endsWith(saved.photoId));
+  assert.equal(rewrites.length, 2, 'the rewrite targets the same object id');
+  assert.equal(rewrites.at(-1).contentType, 'image/png', 'and carries the new content type');
 
   // A missing object is a normal answer, not an error.
   assert.equal(await readPhoto('f'.repeat(32) + '.jpg'), null, 'missing object reads as null');
@@ -236,7 +244,6 @@ async function storageClientChecks(storage) {
 
 // ---------- the real server, pointed at both fakes ----------
 function startApp(storage, gemini) {
-  mkdirSync(TEST_DIR, { recursive: true });
   const child = spawn('node', ['server.js'], {
     env: {
       ...process.env,
@@ -254,7 +261,6 @@ function startApp(storage, gemini) {
       GEMINI_API_BASE: `${gemini.url}/v1beta`,
       GEMINI_MODEL: 'test-model',
       SMTP_HOST: '',
-      SMTP_USER: '',
       TURNSTILE_SITE_KEY: '',
       TURNSTILE_SECRET: '',
       NODE_ENV: 'test',
@@ -335,8 +341,13 @@ async function apiFlows(storage, gemini) {
     Math.max(storedMeta.width, storedMeta.height) <= 1400,
     `the stored image is capped at 1400px (got ${storedMeta.width}x${storedMeta.height})`,
   );
+  assert.ok(
+    gemini.requests.some((r) => r.path === '/v1beta/models/test-model:generateContent' && r.key === 'fake-gemini-key-abc123'),
+    'the scan calls the configured model with the user key',
+  );
 
   // ---- serving reads back from Storage ----
+  const getsBefore = storage.requests.filter((r) => r.method === 'GET').length;
   const served = await fetch(`${BASE}${draft.thumb}`);
   assert.equal(served.status, 200, 'the photo route serves the Storage object');
   assert.equal(served.headers.get('content-type'), 'image/jpeg');
@@ -344,9 +355,9 @@ async function apiFlows(storage, gemini) {
     Buffer.from(await served.arrayBuffer()), stored.bytes,
     'the served bytes are exactly what Storage holds',
   );
-  assert.ok(
-    storage.requests.some((r) => r.method === 'GET' && r.path.endsWith(photoId)),
-    'the photo route reads Storage rather than the local disk',
+  assert.equal(
+    storage.requests.filter((r) => r.method === 'GET').length - getsBefore, 1,
+    'serving the photo read that object exactly once',
   );
 
   // ---- export reads the same object back ----
@@ -509,23 +520,26 @@ async function migrationFlow(storage) {
   assert.match(second.stderr, new RegExp(`${missingId}.*not on disk`), 'the missing photo is named');
   assert.match(second.stdout, /2 uploaded, 1 missing, 3 referenced/, 'the summary counts the miss');
 
-  // Idempotent: the second run upserts the same objects instead of duplicating.
-  assert.equal(storage.objects.size, 2, 're-running never duplicates objects');
+  // Idempotent: the second run re-uploads the two resolvable photos (upsert) and
+  // still uploads nothing for the missing one.
+  const posts = storage.requests.filter((r) => r.method === 'POST');
+  assert.equal(posts.length, 4, 'two runs × two resolvable photos — the missing file is never uploaded');
+  assert.equal(posts.filter((r) => r.path.endsWith(jpegId)).length, 2, 'the re-run upserts the same id again');
   assert.deepEqual(storage.objects.get(jpegId).bytes, jpegBytes, 'bytes are unchanged by the re-run');
-  const jpegUploads = storage.requests.filter((r) => r.method === 'POST' && r.path.endsWith(jpegId));
-  assert.equal(jpegUploads.length, 2, 'the re-run uploads again (upsert), it does not skip');
 
   // Without Storage credentials it stops before touching anything.
+  storage.requests.length = 0;
   const noCreds = await runScript({ SUPABASE_URL: '', SUPABASE_SERVICE_ROLE_KEY: '' });
   assert.equal(noCreds.status, 1, 'missing credentials must fail');
   assert.match(noCreds.stderr, /SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required/);
-  assert.equal(storage.objects.size, 2, 'a credential-less run changes nothing');
+  assert.equal(storage.requests.length, 0, 'a credential-less run makes no Storage call at all');
 }
 
 // ---------- shell ----------
 // Start from a clean directory: an aborted earlier run may have left its database
 // behind, and a duplicate-account error would hide the real failure.
 rmSync(TEST_DIR, { recursive: true, force: true });
+mkdirSync(TEST_DIR, { recursive: true });
 const storage = await startFakeStorage();
 const gemini = await startFakeGemini();
 let child = null;
@@ -544,6 +558,11 @@ try {
 
   step = Date.now();
   await failedDraftCleanupFlow(storage, token, jpeg);
+  // Storage mode must never also fall back to writing photo files.
+  assert.equal(
+    existsSync(`${TEST_DIR}/photos`), false,
+    'no local photo directory is created when Storage is configured',
+  );
   console.log(`  ok   failed draft insert removes the stored photo (${Date.now() - step}ms)`);
 
   step = Date.now();
