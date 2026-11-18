@@ -130,5 +130,5 @@ values mirror the JSON contract in `gemini.js` — `item_type`, `brand`,
 | Account deletion | sidebar → *Delete account…* → `DELETE /api/account` |
 | Demo reset | `npm run seed:demo` |
 | Backups / restore drill | `docs/backup-restore.md` |
-| Tests | `npm test` (smoke flows + the Storage backend against local fakes, no keys needed) |
+| Tests | `npm test` (smoke flows, plus the Storage backend and the photo-copy script against local fakes — no keys needed) |
 | CI | `.github/workflows/ci.yml` (tests + image build) |

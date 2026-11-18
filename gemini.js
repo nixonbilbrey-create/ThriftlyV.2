@@ -1,8 +1,14 @@
 const PLATFORMS = ['Vinted', 'Depop', 'Poshmark', 'eBay'];
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-// Google's API by default. The override exists so tests can point the pipeline at
-// a local fake instead of spending a real key's quota; leave it unset in production.
-const API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
+const DEFAULT_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// GEMINI_API_BASE lets the tests point this client at a local fake instead of
+// spending a real key. In production it is ignored outright: honoring it would
+// send every user's own Gemini key to whatever host the variable names. server.js
+// also refuses to boot in production when it is set, so a bad deploy is loud
+// rather than silently redirected.
+const API_BASE = (process.env.NODE_ENV === 'production'
+  ? DEFAULT_API_BASE
+  : (process.env.GEMINI_API_BASE || DEFAULT_API_BASE)).replace(/\/+$/, '');
 
 // Cheap validation call — lists models instead of generating anything, so connecting
 // a key doesn't cost the user any generation quota.
@@ -124,6 +130,6 @@ function listingParts(analysis) {
 }
 
 module.exports = {
-  PLATFORMS, MODEL, testGeminiKey, callGeminiJSON,
+  PLATFORMS, MODEL, API_BASE, testGeminiKey, callGeminiJSON,
   ANALYZE_SYSTEM_PROMPT, LISTING_SYSTEM_PROMPT, analyzeParts, listingParts,
 };

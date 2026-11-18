@@ -6,7 +6,7 @@
 // verification links via the dev fallback, bearer tokens). Covers the flows
 // that don't need a real Gemini key: accounts, email verification, password
 // reset, drafts CRUD shape, photo storage/serving, rate limiting.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
@@ -533,6 +533,43 @@ async function captchaFlow() {
   }
 }
 
+// GEMINI_API_BASE exists for the tests only. In production gemini.js ignores it
+// and the server refuses to boot while it is set, so a stray value can never
+// send users' own API keys to another host.
+async function configGuardFlow() {
+  const elsewhere = 'http://gemini.invalid/v1beta';
+  const runNode = (args, extraEnv) => spawnSync('node', args, {
+    encoding: 'utf8',
+    timeout: 10000,
+    env: { ...process.env, ENCRYPTION_KEY: 'a'.repeat(64), ...extraEnv },
+  });
+
+  const prodBase = runNode(['-e', "console.log(require('./gemini.js').API_BASE)"], {
+    NODE_ENV: 'production', GEMINI_API_BASE: elsewhere,
+  });
+  assert.equal(prodBase.status, 0, `gemini.js must still load in production: ${prodBase.stderr}`);
+  assert.equal(
+    prodBase.stdout.trim(), 'https://generativelanguage.googleapis.com/v1beta',
+    'production must ignore GEMINI_API_BASE, whatever it is set to',
+  );
+
+  const testBase = runNode(['-e', "console.log(require('./gemini.js').API_BASE)"], {
+    NODE_ENV: 'test', GEMINI_API_BASE: elsewhere,
+  });
+  assert.equal(testBase.stdout.trim(), elsewhere, 'tests can point the client at a local fake');
+
+  const boot = runNode(['server.js'], {
+    NODE_ENV: 'production',
+    GEMINI_API_BASE: elsewhere,
+    PORT: '3129',
+    DB_PATH: `${TEST_DIR}/guard.db`,
+    PHOTOS_DIR: `${TEST_DIR}/photos`,
+    BASE_URL: 'http://127.0.0.1:3129',
+  });
+  assert.equal(boot.status, 1, 'production must refuse to boot with an API-origin override');
+  assert.match(boot.stderr, /GEMINI_API_BASE is set in production/, 'the refusal names the variable');
+}
+
 async function limiterChecks() {
   // Runs last: the authLimiter (shared by signup/resend/request-reset,
   // 10/hour/IP) is deliberately exhausted here so nothing earlier is affected.
@@ -584,6 +621,9 @@ try {
   const tCapt = Date.now();
   await captchaFlow();
   console.log(`  ok   signup captcha gate (${Date.now() - tCapt}ms)`);
+  const tCfg = Date.now();
+  await configGuardFlow();
+  console.log(`  ok   gemini endpoint override locked to tests (${Date.now() - tCfg}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);

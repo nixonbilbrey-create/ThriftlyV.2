@@ -170,6 +170,7 @@ image):
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | for real email | SMTP relay (e.g. `smtp-relay.brevo.com`, 587, `false` for STARTTLS). Absent → dev mode prints links and returns them in API responses — do not ship that way |
 | `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |
 | `GEMINI_MODEL` | optional | Model override (default `gemini-3.5-flash`) |
+| `GEMINI_API_BASE` | tests only | Points the client at a local fake. Ignored in production, where the server refuses to start if it is set — keys only go to Google |
 | `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
 | `TURNSTILE_SITE_KEY` | optional | Cloudflare Turnstile site key — renders the signup CAPTCHA widget |
 | `TURNSTILE_SECRET` | optional | Turnstile secret. When set, signup is refused without a valid challenge (fails closed if Cloudflare is unreachable) |

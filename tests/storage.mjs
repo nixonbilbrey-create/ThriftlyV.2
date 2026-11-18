@@ -8,17 +8,19 @@
 // of being monkeypatched: upload headers and upsert, read-through for
 // /api/photos and the data export, and delete when a draft goes away.
 //
-// The last flow blocks the drafts insert with a SQLite trigger to prove the scan
-// route removes a photo it has already stored when the draft row can't be
-// written — the orphan-cleanup path in server.js.
+// The last two flows are the riskiest ones before cutover: one blocks the drafts
+// insert with a SQLite trigger to prove the scan route removes a photo it has
+// already stored when the draft row can't be written, and the other runs the
+// real local→Storage copy script (scripts/migrate-photos-to-storage.mjs),
+// which nothing else exercises.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
 
-const PORT = 3131;
+const PORT = Number(process.env.STORAGE_TEST_PORT || 3131);
 const BASE = `http://127.0.0.1:${PORT}`;
 const TEST_DIR = 'data-test/storage';
 const DB_PATH = `${TEST_DIR}/storage.db`;
@@ -106,7 +108,7 @@ function startFakeStorage() {
 
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, objects, requests, state, url: `http://127.0.0.1:${server.address().port}` });
+      resolve({ server, objects, requests, url: `http://127.0.0.1:${server.address().port}` });
     });
   });
 }
@@ -327,9 +329,12 @@ async function apiFlows(storage, gemini) {
   assert.equal(upload.auth, `Bearer ${SERVICE_KEY}`, 'the server authenticates with the service-role key');
   assert.equal(upload.upsert, 'true', 'uploads upsert');
   assert.equal(upload.contentType, 'image/jpeg', 'the normalized image is stored as jpeg');
-  assert.equal(stored.bytes[0], 0xff, 'stored bytes are a JPEG (SOI marker)');
-  assert.equal(stored.bytes[1], 0xd8, 'stored bytes are a JPEG (SOI marker)');
-  assert.ok(stored.bytes.length < jpeg.length, 'only the resized image is uploaded, not the original');
+  const storedMeta = await sharp(stored.bytes).metadata();
+  assert.equal(storedMeta.format, 'jpeg', 'the stored object is a jpeg');
+  assert.ok(
+    Math.max(storedMeta.width, storedMeta.height) <= 1400,
+    `the stored image is capped at 1400px (got ${storedMeta.width}x${storedMeta.height})`,
+  );
 
   // ---- serving reads back from Storage ----
   const served = await fetch(`${BASE}${draft.thumb}`);
@@ -408,7 +413,119 @@ async function failedDraftCleanupFlow(storage, token, jpeg) {
   }
 }
 
+// ---------- local → Storage photo migration ----------
+// scripts/migrate-photos-to-storage.mjs is the step that has to be right before
+// cutover: it reads photo ids out of the SQLite drafts and uploads the matching
+// files. Run the real script against the same fake bucket, with a throwaway
+// database and photo directory in the shape the cutover will meet.
+async function migrationFlow(storage) {
+  const dir = `${TEST_DIR}/migrate`;
+  const photosDir = `${dir}/photos`;
+  const dbPath = `${dir}/migrate.db`;
+  mkdirSync(photosDir, { recursive: true });
+
+  const jpegBytes = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#334455' } })
+    .jpeg().toBuffer();
+  const pngBytes = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#998877' } })
+    .png().toBuffer();
+  const jpegId = `${'a'.repeat(32)}.jpg`;
+  const pngId = `${'b'.repeat(32)}.png`;
+  const missingId = `${'c'.repeat(32)}.jpg`;
+  writeFileSync(`${photosDir}/${jpegId}`, jpegBytes);
+  writeFileSync(`${photosDir}/${pngId}`, pngBytes);
+
+  const Database = (await import('better-sqlite3')).default;
+  const db = new Database(dbPath);
+  db.exec(`
+    create table drafts (
+      id text primary key, user_id text, analysis text not null, thumb text,
+      listings text not null default '{}', selected text not null default '[]',
+      created_at integer not null, updated_at integer not null
+    );
+  `);
+  const insert = db.prepare(
+    'insert into drafts (id, user_id, analysis, thumb, listings, selected, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const now = Date.now();
+  const addDraft = (id, thumb) => insert.run(id, 'user1', '{}', thumb, '{}', '[]', now, now);
+  addDraft('draft-jpeg', `/api/photos/${jpegId}`);
+  addDraft('draft-png', `/api/photos/${pngId}`);
+  addDraft('draft-no-photo', null); // nothing to copy
+  addDraft('draft-legacy-data-uri', 'data:image/jpeg;base64,AAAA'); // pre-file-URL drafts
+  db.close();
+
+  // Async on purpose: the fake bucket lives in this process, so a synchronous
+  // spawn would block the event loop the script's uploads need answering by.
+  const runScript = (extraEnv = {}) => new Promise((resolve) => {
+    const child = spawn('node', ['scripts/migrate-photos-to-storage.mjs'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        DATABASE_URL: '',
+        DB_PATH: dbPath,
+        PHOTOS_DIR: photosDir,
+        SUPABASE_URL: storage.url,
+        SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+        SUPABASE_STORAGE_BUCKET: BUCKET,
+        ...extraEnv,
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+
+  storage.objects.clear();
+  storage.requests.length = 0;
+
+  // Happy path: only real photo ids are copied, byte for byte, under the same
+  // ids the drafts already point at — so /api/photos URLs keep working.
+  const first = await runScript();
+  assert.equal(first.status, 0, `the copy must succeed: ${first.stderr || first.stdout}`);
+  assert.match(first.stdout, /2 uploaded, 0 missing, 2 referenced/, 'summary counts real photos only');
+  assert.deepEqual(storage.objects.get(jpegId)?.bytes, jpegBytes, 'the jpeg is copied byte for byte');
+  assert.deepEqual(storage.objects.get(pngId)?.bytes, pngBytes, 'the png is copied byte for byte');
+  assert.equal(storage.objects.size, 2, 'null and legacy data: thumbs are skipped');
+
+  const jpegUpload = storage.requests.find((r) => r.method === 'POST' && r.path.endsWith(jpegId));
+  const pngUpload = storage.requests.find((r) => r.method === 'POST' && r.path.endsWith(pngId));
+  assert.equal(jpegUpload.path, `/storage/v1/object/${BUCKET}/${jpegId}`, 'the object keeps the photo id the draft uses');
+  assert.equal(jpegUpload.contentType, 'image/jpeg', 'content type comes from the file extension');
+  assert.equal(pngUpload.contentType, 'image/png', 'png photos keep their type');
+  assert.equal(jpegUpload.auth, `Bearer ${SERVICE_KEY}`, 'the copy authenticates with the service key');
+
+  // A draft whose file is gone fails the run after copying what it can — the
+  // runbook relies on that non-zero exit to notice a partial copy.
+  const withMissing = new Database(dbPath);
+  withMissing.prepare(
+    'insert into drafts (id, user_id, analysis, thumb, listings, selected, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run('draft-missing', 'user1', '{}', `/api/photos/${missingId}`, '{}', '[]', now, now);
+  withMissing.close();
+
+  const second = await runScript();
+  assert.equal(second.status, 1, 'a missing file must fail the run');
+  assert.match(second.stderr, new RegExp(`${missingId}.*not on disk`), 'the missing photo is named');
+  assert.match(second.stdout, /2 uploaded, 1 missing, 3 referenced/, 'the summary counts the miss');
+
+  // Idempotent: the second run upserts the same objects instead of duplicating.
+  assert.equal(storage.objects.size, 2, 're-running never duplicates objects');
+  assert.deepEqual(storage.objects.get(jpegId).bytes, jpegBytes, 'bytes are unchanged by the re-run');
+  const jpegUploads = storage.requests.filter((r) => r.method === 'POST' && r.path.endsWith(jpegId));
+  assert.equal(jpegUploads.length, 2, 'the re-run uploads again (upsert), it does not skip');
+
+  // Without Storage credentials it stops before touching anything.
+  const noCreds = await runScript({ SUPABASE_URL: '', SUPABASE_SERVICE_ROLE_KEY: '' });
+  assert.equal(noCreds.status, 1, 'missing credentials must fail');
+  assert.match(noCreds.stderr, /SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required/);
+  assert.equal(storage.objects.size, 2, 'a credential-less run changes nothing');
+}
+
 // ---------- shell ----------
+// Start from a clean directory: an aborted earlier run may have left its database
+// behind, and a duplicate-account error would hide the real failure.
+rmSync(TEST_DIR, { recursive: true, force: true });
 const storage = await startFakeStorage();
 const gemini = await startFakeGemini();
 let child = null;
@@ -428,6 +545,10 @@ try {
   step = Date.now();
   await failedDraftCleanupFlow(storage, token, jpeg);
   console.log(`  ok   failed draft insert removes the stored photo (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await migrationFlow(storage);
+  console.log(`  ok   local→Storage photo copy script (${Date.now() - step}ms)`);
 } catch (err) {
   failed = true;
   console.error('STORAGE TEST FAIL:', err.stack || err);

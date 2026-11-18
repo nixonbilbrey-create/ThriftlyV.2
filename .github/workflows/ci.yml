@@ -8,6 +8,10 @@ jobs:
   test:
     name: npm test
     runs-on: ubuntu-latest
+    env:
+      # The app refuses to start without this and CI has no .env (it's gitignored),
+      # so the test job supplies a throwaway key for the server children.
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

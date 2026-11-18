@@ -96,7 +96,10 @@ SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... node scripts/migrate-photos-to-st
 
 The photo copy keeps the same object ids, so `draft.thumb` URLs do not change.
 It reads files referenced by the SQLite drafts and upserts them into the
-bucket; it does not touch the database.
+bucket; it does not touch the database. `npm test` runs this script against a
+fake bucket (see `tests/storage.mjs`), covering byte-for-byte copies, skipped
+null/legacy thumbs, idempotent re-runs and the non-zero exit when a referenced
+file is missing — but it has not run against your project until you run it here.
 
 Do this during a quiet window, or re-run it immediately before cutover (user
 rows are upserted; tokens are insert-if-absent).

@@ -199,6 +199,13 @@ const TURNSTILE_VERIFY_URL = process.env.TURNSTILE_VERIFY_URL || 'https://challe
 // Fail loudly at boot (but don't refuse to start: CI and smoke tests run the
 // production image/binary without email or CAPTCHA configured).
 if (process.env.NODE_ENV === 'production') {
+  // Fatal, unlike the warnings below: an API-origin override would redirect every
+  // user's Gemini key to another host. gemini.js already ignores the value in
+  // production; this makes the misconfiguration impossible to miss.
+  if (process.env.GEMINI_API_BASE) {
+    console.error('[startup] GEMINI_API_BASE is set in production — unset it. Gemini keys must only ever be sent to Google\'s API.');
+    process.exit(1);
+  }
   if (!process.env.SMTP_HOST) {
     console.warn('[startup] SMTP is not configured: verification/reset emails will NOT be delivered and links will be returned in API responses. Do not allow public signups in this state.');
   }
