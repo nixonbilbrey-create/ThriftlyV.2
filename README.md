@@ -46,7 +46,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # cop
 cp .env.example .env    # paste that value in as ENCRYPTION_KEY
 npm start
 
-npm test   # optional: end-to-end smoke test in its own throwaway DB/port
+npm test   # optional: end-to-end smoke test, plus the Storage backend against local fakes
+           # (no Gemini or Supabase credentials needed — everything runs on 127.0.0.1)
 ```
 
 Open **http://localhost:3001** — sign up, connect a Gemini key (the page

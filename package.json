@@ -6,8 +6,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/smoke.mjs",
+    "test": "node tests/smoke.mjs && node tests/storage.mjs",
     "test:pg": "node tests/pg.mjs",
+    "test:storage": "node tests/storage.mjs",
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs",
     "seed:demo": "node scripts/seed-demo.mjs",

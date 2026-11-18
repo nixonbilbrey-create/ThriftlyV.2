@@ -1,6 +1,8 @@
 const PLATFORMS = ['Vinted', 'Depop', 'Poshmark', 'eBay'];
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+// Google's API by default. The override exists so tests can point the pipeline at
+// a local fake instead of spending a real key's quota; leave it unset in production.
+const API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 
 // Cheap validation call — lists models instead of generating anything, so connecting
 // a key doesn't cost the user any generation quota.
