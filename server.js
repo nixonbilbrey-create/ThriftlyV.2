@@ -21,13 +21,13 @@ const {
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
   setUserPasswordHash, deleteSessionsForUser,
-  listDrafts, getDraft, createDraft, updateDraft, deleteDraft, clearDrafts,
+  listDrafts, getDraft, createDraft, updateDraft, deleteDraft, clearDrafts, ping,
 } = db_;
 const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
-const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb } = require('./photos');
+const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled } = require('./photos');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
@@ -39,7 +39,7 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 
 // Must match the version shown/dated in public/privacy.html. Bump BOTH when the
 // policy changes — every signup records it, and /api/auth/me reports it back.
-const PRIVACY_VERSION = '2026-11-04';
+const PRIVACY_VERSION = '2026-11-18';
 
 const app = express();
 // The app always runs behind a TLS-terminating proxy in production (Render,
@@ -86,7 +86,8 @@ app.use(express.json({ limit: '8mb' }));
 // query string, because reset/verification tokens live there. Health checks are
 // skipped so an uptime monitor doesn't drown the log.
 app.use((req, res, next) => {
-  if (!req.path.startsWith('/api/') || req.path === '/api/health') return next();
+  // Health/readiness probes are polled by monitors, so they'd drown the log.
+  if (!req.path.startsWith('/api/') || req.path === '/api/health' || req.path === '/api/ready') return next();
   const started = process.hrtime.bigint();
   res.on('finish', () => {
     const ms = Number(process.hrtime.bigint() - started) / 1e6;
@@ -96,6 +97,25 @@ app.use((req, res, next) => {
 });
 
 const db = initDb(process.env.DB_PATH);
+
+// ---------- database / photo-storage pairing ----------
+// Postgres without Supabase Storage is a silent data-loss trap: after cutover
+// the Render disk is gone, so photos would be written to the container's
+// ephemeral filesystem and disappear with the next deploy. Refuse to boot that
+// way in production (PHOTOS_ALLOW_LOCAL=1 is the escape hatch for a host that
+// really does have a persistent disk), and warn loudly everywhere else.
+if (db.kind === 'pg' && !storageEnabled() && process.env.PHOTOS_ALLOW_LOCAL !== '1') {
+  const message =
+    'DATABASE_URL selects Postgres but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are missing, so photos ' +
+    'would be written to the container filesystem and lost on the next deploy. Set both Storage variables ' +
+    '(docs/SUPABASE.md), or set PHOTOS_ALLOW_LOCAL=1 if this host has a persistent disk for photos.';
+  if (process.env.NODE_ENV === 'production') {
+    console.error(`[startup] ${message}`);
+    process.exit(1);
+  }
+  console.warn(`[startup] ${message}`);
+}
+
 cleanupExpiredSessions(db).catch(err => console.error('[cleanup] sessions:', err.message));
 cleanupExpiredVerifications(db).catch(err => console.error('[cleanup] verifications:', err.message));
 cleanupExpiredPasswordResets(db).catch(err => console.error('[cleanup] resets:', err.message));
@@ -458,8 +478,15 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
     });
 
     // Photo stored as a resized file, referenced by URL — see photos.js.
-    const { url } = await savePhoto(normalized.buffer, normalized.mimetype);
-    const draft = await createDraft(db, req.userId, { analysis, thumb: url, selected: PLATFORMS });
+    const photo = await savePhoto(normalized.buffer, normalized.mimetype);
+    let draft;
+    try {
+      draft = await createDraft(db, req.userId, { analysis, thumb: photo.url, selected: PLATFORMS });
+    } catch (err) {
+      // The upload is already stored; don't leave it orphaned when the row fails.
+      await deletePhoto(photo.photoId).catch(() => {});
+      throw err;
+    }
     res.status(201).json(draft);
   } catch (err) {
     sendError(res, err);
@@ -539,6 +566,20 @@ app.delete('/api/drafts', auth, async (req, res) => {
 // Health checks are public and unauthenticated: expose liveness only, never
 // filesystem paths or configuration.
 app.get('/api/health', (_req, res) => res.json({ ok: true, version: APP_VERSION, uptime: Math.round(process.uptime()) }));
+
+// Readiness differs from liveness: it touches the database, so a monitor can
+// tell "process up" apart from "process able to serve". Point an external uptime
+// check here once the app runs on Postgres. Render's own health check stays on
+// /api/health so a database blip can't put the service into a restart loop.
+app.get('/api/ready', async (_req, res) => {
+  try {
+    await ping(db);
+    res.json({ ok: true, db: db.kind });
+  } catch (err) {
+    console.error('[ready] database ping failed:', err && err.message);
+    res.status(503).json({ ok: false, db: db.kind });
+  }
+});
 
 // Async route/middleware failures reach one place; sendError keeps 5xx details
 // in the server log and 4xx messages client-actionable.

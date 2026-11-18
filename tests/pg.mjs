@@ -74,7 +74,7 @@ async function main() {
   try {
     const user = await createUser(db, {
       id: 'pg-test-user', email: 'pg-test@thriftly.test', passwordHash: 'hash',
-      consentVersion: '2026-11-04', consentAt: 12345,
+      consentVersion: '2026-11-18', consentAt: 12345,
     });
     assert.equal(user.email, 'pg-test@thriftly.test');
     assert.equal(user.email_verified, false);
@@ -143,7 +143,7 @@ async function main() {
     // Expired-token housekeeping still removes the right rows.
     const expiredUser = await createUser(db, {
       id: 'pg-expired-user', email: 'pg-expired@thriftly.test', passwordHash: 'hash',
-      consentVersion: '2026-11-04', consentAt: 1,
+      consentVersion: '2026-11-18', consentAt: 1,
     });
     await createSession(db, { token: 'pg-expired-session', userId: expiredUser.id, expiresAt: Date.now() - 1000 });
     await createEmailVerification(db, { token: 'pg-expired-verify', userId: expiredUser.id, expiresAt: Date.now() - 1000 });

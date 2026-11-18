@@ -32,8 +32,8 @@
   <h1>Privacy Policy</h1>
   <p class="lead">This policy explains exactly what Thriftly does with your data — in plain language. It's short on purpose.</p>
   <div class="card">
-    <span class="version">Version 2026-11-04</span>
-    <p style="font-size:13px;"><b>Last updated:</b> November 4, 2026. Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
+    <span class="version">Version 2026-11-18</span>
+    <p style="font-size:13px;"><b>Last updated:</b> November 18, 2026. Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
 
     <h2>Who runs Thriftly</h2>
     <p>Thriftly is a small app for people reselling secondhand items: you photograph something, the software identifies it, suggests a price and drafts listings for resale platforms. The operator is the person or entity that hosts the copy of Thriftly you're signing up on.</p>
@@ -45,7 +45,7 @@
       <tr><td>Password</td><td>Logging in</td><td>Only a bcrypt hash — we never see or store your actual password</td></tr>
       <tr><td>Privacy Policy agreement</td><td>Proof of consent</td><td>Policy version + timestamp recorded when you sign up</td></tr>
       <tr><td>Your Gemini API key</td><td>So scans and listing generation run on <b>your own</b> Google account, not the operator's</td><td>Encrypted at rest (AES-256-GCM) with a server-side key</td></tr>
-      <tr><td>Photos you upload</td><td>Saved with your item drafts so you can recognize them later</td><td>Resized image files on the server's disk (never in the database)</td></tr>
+      <tr><td>Photos you upload</td><td>Saved with your item drafts so you can recognize them later</td><td>Resized image files in the operator's private storage — the server's disk or a private object-storage bucket (never in the database, never in a public bucket)</td></tr>
       <tr><td>Drafts and generated listings</td><td>The app's core feature</td><td>Database on the operator's server, tied to your account</td></tr>
       <tr><td>Session + verification tokens</td><td>Keeping you logged in; email verification and password reset</td><td>Database rows; expired ones purged regularly</td></tr>
     </table>
@@ -62,7 +62,7 @@
       <li><b>Google (Gemini API).</b> When you scan a photo or generate listings, your photo and the item text are sent to Google's Gemini service <i>using your own API key</i>, to identify the item and draft copy. This is a direct consequence of using the feature. On Gemini's free tier, Google may use inputs to improve its models under Google's own terms — treat your photos with that in mind.</li>
       <li><b>Email provider.</b> Verification and password-reset emails are delivered through the operator's SMTP provider, which processes the recipient address and message content to send them.</li>
       <li><b>Cloudflare (Turnstile).</b> If the operator has enabled the signup CAPTCHA, the signup page loads a Turnstile challenge from Cloudflare, which processes your IP address and browser signals to judge whether the request is human; the operator's server then verifies the resulting token with Cloudflare. The app itself stores none of that challenge data.</li>
-      <li><b>Hosting provider.</b> The server (database, files, code) runs on cloud infrastructure the operator rents.</li>
+      <li><b>Hosting provider.</b> The server (database, files, code) runs on cloud infrastructure the operator rents, which may include a managed database and file-storage provider (for example Supabase) for the database and the photos.</li>
     </ul>
 
     <h2>How long we keep things</h2>

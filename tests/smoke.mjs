@@ -140,6 +140,10 @@ async function authAndVerifyFlow() {
   const health = await json(await fetch(`${BASE}/api/health`));
   assert.equal(health.ok, true, 'health must report ok');
   assert.equal(health.dbPath, undefined, 'health must not leak the database path');
+  // readiness actually touches the database, so it fails when the app can't serve
+  const ready = await json(await fetch(`${BASE}/api/ready`));
+  assert.equal(ready.ok, true, 'readiness must report ok against a reachable database');
+  assert.equal(ready.db, 'sqlite', 'readiness must name the backend');
 
   // re-consent: config exposes the current version, a stale account can record
   // acceptance of it, and the endpoint is authenticated and explicit.

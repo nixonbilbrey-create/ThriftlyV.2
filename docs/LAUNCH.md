@@ -22,7 +22,7 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 | 9 | `BACKUP_INTERVAL_HOURS=24` and `BACKUP_DIR=/app/data/backups` | repo (done in `render.yaml`) | Archive appears in the disk after a day (or force one via Shell) |
 | 10 | Off-provider backup copy (`BACKUP_UPLOAD_CMD` to R2/S3/B2) | you | One archive + checksum exist outside Render |
 | 11 | Restore drill on a scratch copy | you | Restored app boots, login works, drafts and a photo load |
-| 12 | External uptime monitor on `/api/health` | you | You get an email/phone alert within minutes of an outage |
+| 12 | External uptime monitor on `/api/ready` (and `/api/health` for liveness) | you | You get an email/phone alert within minutes of an outage or a database outage |
 | 13 | Custom domain + HTTPS | you | `https://yourdomain` serves the app; HTTP redirects; cert valid |
 | 14 | Smoke-test production like a stranger | you | Sign up → verify → login → Gemini key → scan → drafts → export → delete all pass |
 | 15 | Legal review of `/terms.html` and `/privacy.html` | you | A human (ideally a lawyer) has read both; contact address is real |
@@ -43,7 +43,9 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
   `no-store` on private API responses.
 - Per-request API log lines (method, path, status, duration) that never include
   query strings (where reset/verify tokens live).
-- `/api/health` reports only `ok`, version and uptime — no filesystem paths.
+- `/api/health` reports only `ok`, version and uptime — no filesystem paths —
+  and `/api/ready` adds a database ping (503 when the database is unreachable),
+  so liveness and readiness can be monitored separately.
 - Backups: checksummed online SQLite snapshot + photos (`npm run backup`),
   verified restore (`npm run restore`), and an in-process nightly scheduler
   (`BACKUP_INTERVAL_HOURS`) because Render has no cron that can read a service's

@@ -14,6 +14,13 @@ schema, exercises every table and drops it again; CI runs it against a local
 project** — run the copy scripts and a full smoke pass with real credentials
 before switching production traffic.
 
+The pairing is enforced at boot: a production process with `DATABASE_URL` set
+but no Storage credentials exits with an explanatory message instead of
+silently writing photos to an ephemeral container disk (`PHOTOS_ALLOW_LOCAL=1`
+overrides for a host with a real persistent volume). `/api/ready` reports the
+database backend and returns 503 when the database can't be reached, so an
+external monitor catches a Postgres outage that `/api/health` would not.
+
 ## 1. Resume the project
 
 The connected project (`odellcwrjcsoeoqqwpmu`, us-east-1, Postgres 17) is
@@ -127,6 +134,8 @@ Supabase:
 ## Backups and deletion
 
 Supabase's automated backups and PITR depend on the plan — check what your
-project actually has, and keep an independent export either way. Account
-deletion must remove Storage objects too; the current SQLite delete path only
-removes local files, so the cutover has to call Storage delete for each photo.
+project actually has, and keep an independent export either way. Account and
+draft deletion already go through `deletePhoto()` in [photos.js](../photos.js),
+which removes the Storage object when Storage is configured and the local file
+otherwise — the same code path serves both backends, so there is nothing extra
+to wire at cutover.

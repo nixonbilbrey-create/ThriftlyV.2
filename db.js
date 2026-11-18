@@ -294,6 +294,12 @@ const sqlite = {
 };
 
 // ---------- facade ----------
+// Cheap liveness check against whichever backend is in use (/api/ready).
+async function ping(db) {
+  if (db.kind === 'pg') { await db.pool.query('select 1'); return; }
+  db.prepare('SELECT 1').get();
+}
+
 async function createUser(db, args) { return backend(db).createUser(db, args); }
 async function getUserByEmail(db, email) { return backend(db).getUserByEmail(db, email); }
 async function getUserById(db, id) { return backend(db).getUserById(db, id); }
@@ -326,7 +332,7 @@ async function deleteDraft(db, userId, id) { return backend(db).deleteDraft(db, 
 async function clearDrafts(db, userId) { return backend(db).clearDrafts(db, userId); }
 
 module.exports = {
-  initDb, publicUser,
+  initDb, publicUser, ping,
   createUser, getUserByEmail, getUserById, markUserVerified, setUserGeminiKey, clearUserGeminiKey, deleteUserRow,
   createSession, getSession, deleteSession, cleanupExpiredSessions, runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS: 60 * 60 * 1000,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,

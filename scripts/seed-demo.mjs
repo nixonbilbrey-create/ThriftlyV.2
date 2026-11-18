@@ -20,7 +20,7 @@ const { savePhoto, deletePhoto, photoIdFromThumb } = photosModule;
 
 const EMAIL = 'demo@thriftly.local';
 const PASSWORD = 'demo-pass-1234';
-const CONSENT_VERSION = '2026-11-04'; // keep in sync with PRIVACY_VERSION in server.js
+const CONSENT_VERSION = '2026-11-18'; // keep in sync with PRIVACY_VERSION in server.js
 
 const PLATFORMS = ['Vinted', 'Depop', 'Poshmark', 'eBay'];
 

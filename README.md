@@ -131,17 +131,21 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   passwords, and API keys all travel in plain headers otherwise. 5xx errors
   stay generic to the client (details are logged server-side only), so an
   outage can't leak internals to users.
-- **Photos are stored as files on disk** (under `data/photos/`, configurable
-  via `PHOTOS_DIR`), referenced from each draft by a same-origin URL — no more
-  multi-megabyte base64 blobs in the database. Uploads get one resize pass
+- **Photos live in private storage**, referenced from each draft by a
+  same-origin URL — no multi-megabyte base64 blobs in the database. With
+  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` set they're uploaded to a
+  private Supabase Storage bucket; otherwise they're files under
+  `data/photos/` (configurable via `PHOTOS_DIR`). Uploads get one resize pass
   first (`photos.js` → `shrink()`): longest edge capped at 1400 px, re-encoded
   as JPEG q82, EXIF orientation auto-applied — and that single normalized
-  image is both what Gemini sees and what's stored; the original never hits
-  disk. They're served without auth over unguessable 128-bit random ids,
+  image is both what Gemini sees and what's stored; the original is never
+  kept. They're served without auth over unguessable 128-bit random ids,
   since `<img>` tags can't send Bearer headers; swap in signed URLs if draft
-  images ever become sensitive. The storage seam is isolated in `photos.js`,
-  so an S3/R2 backend can replace the filesystem without touching anything
-  else.
+  images ever become sensitive. Object ids survive either backend, so the
+  same draft URLs keep working across the move to Supabase. Setting
+  `DATABASE_URL` without Storage credentials refuses to boot in production
+  (`PHOTOS_ALLOW_LOCAL=1` is the escape hatch), so photos can't silently land
+  on an ephemeral container disk.
 
 ## Deploying (Render profile)
 
@@ -168,11 +172,24 @@ image):
 | `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
 | `TURNSTILE_SITE_KEY` | optional | Cloudflare Turnstile site key — renders the signup CAPTCHA widget |
 | `TURNSTILE_SECRET` | optional | Turnstile secret. When set, signup is refused without a valid challenge (fails closed if Cloudflare is unreachable) |
+| `DATABASE_URL` | for Postgres | Supabase **session-pooler** URI (port 5432). Set → Postgres data layer; unset → SQLite (local dev, tests) |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | with `DATABASE_URL` | Private `photos` bucket. The service-role key is server-only: it must never reach the browser |
+| `SUPABASE_STORAGE_BUCKET` | optional | Bucket name; defaults to `photos` |
+| `PHOTOS_ALLOW_LOCAL` | optional | `1` lets a Postgres app keep photos on a local disk, for hosts with a real persistent volume |
 | `PORT` | optional | Listen port (Render injects it; defaults to 10000 in Docker, 3001 locally) |
 
 > Turning on Turnstile means Cloudflare processes signup visitors' IP
-> addresses — the privacy policy (version 2026-11-04) already discloses it in
+> addresses — the privacy policy (version 2026-11-18) already discloses it in
 > the third-party list; leaving the keys blank keeps the CAPTCHA off.
+
+**Postgres + Supabase Storage:** set `DATABASE_URL`, `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_STORAGE_BUCKET` and the app stops
+touching the disk — the SQLite file and photo directory are ignored, the
+nightly in-process backup says so in the log, and Supabase's own
+backups/PITR become the backup story. [docs/SUPABASE.md](docs/SUPABASE.md) is
+the cutover runbook, including the data and photo copy scripts. `/api/health`
+stays a pure liveness check for Render; `/api/ready` pings the database, so
+point an external uptime monitor at that one.
 
 **Launch readiness:** [docs/LAUNCH.md](docs/LAUNCH.md) is the ordered
 checklist for a real launch — repo/CI, SMTP, CAPTCHA, Render, backups,
@@ -192,8 +209,8 @@ monitoring and the first post-launch week. Terms of Service live at
 4. First deploy → note the `*.onrender.com` URL → set `BASE_URL` to it
    (or your custom domain) → redeploy so email links point at the
    right origin. Passthrough deploys won't change the disk mount.
-5. Smoke-test the live deploy: `/api/health`, a full signup → verify
-   email → login flow, a photo scan, and a password reset with SMTP.
+5. Smoke-test the live deploy: `/api/health` and `/api/ready`, a full signup →
+   verify email → login flow, a photo scan, and a password reset with SMTP.
 6. Add a custom domain in Render → Settings → Networking (HTTPS cert
    is managed). HTTP behind the proxy is fine — the HSTS header is the
    one to add on top.
