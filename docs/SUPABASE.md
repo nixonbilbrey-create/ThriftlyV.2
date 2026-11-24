@@ -7,19 +7,27 @@ if you have one to carry (a fresh launch skips step 5).
 **Current status:** the schema and private `photos` bucket are applied to the
 Supabase project. The app boots on Postgres in production mode, and the whole
 auth path works against it — signup → verify → login → `/api/auth/me`, with the
-rows landing in Postgres and `/api/ready` reporting `pg`. `npm run test:pg`
+rows landing in Postgres and `/api/ready` reporting `pg`. `/api/ready` also asks
+Storage for the bucket by name, and a production boot whose bucket does not
+answer exits rather than serving an app that cannot store photos (see the
+pairing note below). `npm run test:pg`
 exercises every table against a throwaway schema; CI runs that and the smoke
 suite against a local `postgres:17` service. It has **not yet run against the
 live project** — the first Render deploy is that test, followed by the stranger
 smoke pass in [LAUNCH.md](LAUNCH.md). `DATABASE_URL` unset still means SQLite,
 which is what local development and the tests use.
 
-The pairing is enforced at boot: a production process with `DATABASE_URL` set
-but no Storage credentials exits with an explanatory message instead of
+The pairing is enforced at boot, twice: a production process with `DATABASE_URL`
+set but no Storage credentials exits with an explanatory message instead of
 silently writing photos to an ephemeral container disk (`PHOTOS_ALLOW_LOCAL=1`
-overrides for a host with a real persistent volume). `/api/ready` reports the
-database backend and returns 503 when the database can't be reached, so an
-external monitor catches a Postgres outage that `/api/health` would not.
+overrides for a host with a real persistent volume), and a process whose bucket
+does not answer exits too. That second check is the one that matters
+operationally: credentials present is not the same as a working bucket, and
+`GET /storage/v1/bucket/<name>` is what tells them apart — 2xx means the key is
+accepted and the bucket exists. `/api/ready` reports the database backend **and**
+Storage (`"storage":"ok"`), returning 503 when either can't be reached, so an
+external monitor catches a Postgres *or* a Storage outage that `/api/health`
+would not.
 
 ## 1. Resume the project
 
@@ -107,9 +115,10 @@ file is missing — but it has not run against your project until you run it her
 Do this during a quiet window, or re-run it immediately before cutover (user
 rows are upserted; tokens are insert-if-absent).
 
-## 6. Cut over the app
+## 6. What the app already does (no action needed)
 
-The cutover commit must:
+The repo side of the cutover is done; this section is the checklist it meets, so
+you can verify it rather than repeat it:
 
 - select the Postgres backend when `DATABASE_URL` is set (SQLite stays for
   local dev and tests);
@@ -130,15 +139,34 @@ Supabase project or its bucket at any point — that is the data.
 
 ## 7. Deploy on Render
 
-`render.yaml` already carries the service, health check and env slots. With
-Supabase:
+`render.yaml` carries the service, health check and env slots; there is no disk
+to create, and a redeploy or a second instance changes nothing because the
+container writes nothing durable.
 
-- `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
-  `SUPABASE_STORAGE_BUCKET` added as secrets;
-- no persistent disk — `render.yaml` already omits it, so the container writes
-  nothing durable and a redeploy or a second instance changes nothing;
-- `BASE_URL` set to the public origin;
-- SMTP and Turnstile configured as in [LAUNCH.md](LAUNCH.md).
+1. **New + → Blueprint**, connect GitHub, pick the repo, branch `main`.
+2. The blueprint prompts once for every `sync: false` variable. Order:
+   `ENCRYPTION_KEY` (fresh), `DATABASE_URL` (session pooler), `SUPABASE_URL`,
+   `SUPABASE_SERVICE_ROLE_KEY`, then `SMTP_*`, then Turnstile. Leave `BASE_URL`
+   blank — set it after the first deploy, once you know the hostname.
+   `SUPABASE_STORAGE_BUCKET` is already `photos`.
+3. Watch the first deploy's logs for
+   `Supabase Storage bucket "photos" reachable`. If you instead see
+   `Supabase Storage is configured but unusable`, the deploy stopped on purpose:
+   the bucket name or the service-role key is wrong.
+4. Set `BASE_URL` to `https://<service>.onrender.com` and let it redeploy.
+
+### Prove it is really on Supabase
+
+| Check | Pass | Means |
+|---|---|---|
+| `GET /api/ready` | `{"ok":true,"db":"pg","storage":"ok"}` | Postgres backend selected, bucket answering. `"db":"sqlite"` = `DATABASE_URL` missing. |
+| Sign up, then Supabase → Table editor → `users` | the row is there | the app writes to *this* project, not a local file |
+| Connect a Gemini key, scan a photo, check Storage → `photos` | one `a1b2…32hex.jpg` object | uploads go to the bucket, and the name is the draft's photo id |
+| `curl -I /api/photos/<id>` | 200 `image/jpeg` | the app serves photos back out of Storage |
+| Delete the draft | object disappears from the bucket | deletion goes through `deletePhoto()`, not a local unlink |
+
+Upload errors are specific: `Supabase Storage upload failed (400)` is the bucket
+name or existence, `(401)`/`(403)` is not the service-role key.
 
 ## Backups and deletion
 

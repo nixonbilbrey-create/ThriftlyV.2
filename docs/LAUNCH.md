@@ -11,22 +11,23 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 
 | # | Item | Owner | Done when |
 |---|---|---|---|
-| 1 | Push the repo to GitHub | you | `main` is on GitHub; first Actions run is green |
-| 2 | Replace the README badge `OWNER` placeholder | you | Badge renders "passing" |
-| 3 | Create the Render service from `render.yaml` | you | Service is live; no disk — data lives in Supabase |
-| 4 | Generate a fresh `ENCRYPTION_KEY` for production | you | Render env var is set; server booted with it (never reuse the dev key) |
-| 5 | Set `BASE_URL` to the public origin and redeploy | you | Verification/reset emails link to the real host |
-| 6 | SMTP provider configured (Brevo relay recommended) | you | A real signup receives the verification email; reset arrives too |
-| 7 | Sender domain authenticated (SPF + DKIM at the provider) | you | Mail lands in the inbox, not spam, for Gmail and Outlook |
+| 1 | Push the repo to GitHub | you | `main` is on GitHub; first Actions run is green (CI badge included) |
+| 2 | **Supabase:** resume the project if it says paused | you | Dashboard shows it running — a paused project fails every connection |
+| 3 | **Supabase:** confirm the schema and the bucket | you | Table editor lists `users`, `sessions`, `email_verifications`, `password_resets`, `drafts`; Storage lists `photos` marked **Private** |
+| 4 | **Supabase:** copy the session-pooler URI, project URL and `service_role` key; generate a fresh `ENCRYPTION_KEY` | you | Four values in hand, typed into Render only — never into chat |
+| 5 | **Render:** New + → Blueprint → pick the repo → fill the prompted variables | you | Service created; no disk under Settings; first deploy green |
+| 6 | Set `BASE_URL` to the service origin and let it redeploy | you | Verification and reset links point at the real host |
+| 7 | SMTP relay configured and the sender domain authenticated (SPF + DKIM) | you | A real signup receives the email; Gmail and Outlook land in the inbox |
 | 8 | Turnstile site + secret keys set | you | Signup on the live origin shows the challenge and rejects a missing token |
-| 9 | Confirm the Supabase plan's backup/PITR window | you | Dashboard shows daily backups (and PITR if the plan includes it) |
-| 10 | Independent export off Supabase (`pg_dump` + a bucket copy to R2/S3/B2) | you | One dump and one photo archive exist outside Supabase |
-| 11 | Restore drill into a scratch project | you | Restored app boots, login works, drafts and a photo load |
-| 12 | External uptime monitor on `/api/ready` (and `/api/health` for liveness) | you | You get an email/phone alert within minutes of an outage or a database outage |
-| 13 | Custom domain + HTTPS | you | `https://yourdomain` serves the app; HTTP redirects; cert valid |
-| 14 | Smoke-test production like a stranger | you | Sign up → verify → login → Gemini key → scan → drafts → export → delete all pass |
-| 15 | Legal review of `/terms.html` and `/privacy.html` | you | A human (ideally a lawyer) has read both; contact address is real |
-| 16 | Support inbox exists and is monitored | you | Address in the docs/pages reaches a human |
+| 9 | **Prove the backend:** `/api/ready` on the live origin | you | `{"ok":true,"db":"pg","storage":"ok"}` — `db:"sqlite"` means `DATABASE_URL` never arrived |
+| 10 | **Prove writes:** signup row, then a scanned photo | you | Row in Supabase `users`; object in the `photos` bucket; `/api/photos/<id>` serves it; deleting the draft removes it |
+| 11 | Confirm the Supabase plan's backup/PITR window | you | Dashboard shows daily backups (and PITR if the plan includes it) |
+| 12 | Independent export off Supabase (`pg_dump` + a bucket copy to R2/S3/B2) | you | One dump and one photo archive exist outside Supabase |
+| 13 | Restore drill into a scratch project | you | Restored app boots, login works, drafts and a photo load |
+| 14 | External uptime monitor on `/api/ready` (and `/api/health` for liveness) | you | An alert within minutes of a database **or Storage** outage |
+| 15 | Custom domain + HTTPS | you | `https://yourdomain` serves the app; HTTP redirects; cert valid |
+| 16 | Smoke-test production like a stranger | you | Sign up → verify → login → Gemini key → scan → drafts → export → delete all pass |
+| 17 | Legal review of `/terms.html` and `/privacy.html`; real support inbox | you | A human (ideally a lawyer) read both; the address reaches someone who answers |
 
 ### What the repo already does for launch
 
@@ -44,8 +45,11 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 - Per-request API log lines (method, path, status, duration) that never include
   query strings (where reset/verify tokens live).
 - `/api/health` reports only `ok`, version and uptime — no filesystem paths —
-  and `/api/ready` adds a database ping (503 when the database is unreachable),
-  so liveness and readiness can be monitored separately.
+  and `/api/ready` adds a database ping **and a Storage check** (503 when either
+  is unreachable), so liveness and readiness can be monitored separately. The
+  Storage check asks Supabase for the bucket by name, so a renamed bucket or a
+  revoked key fails readiness instead of the first user's scan — and a
+  production process whose bucket doesn't answer refuses to boot at all.
 - Backups: production data lives in Supabase (Postgres + private Storage
   bucket), so the story is Supabase's own backups plus an independent
   `pg_dump` + bucket export kept off-provider. There is no disk to snapshot and
@@ -85,17 +89,54 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 
 ## Launch-day sequence (about 90 minutes)
 
-1. Push, wait for CI green, fix anything red before touching Render.
-2. Create the Render service; set `ENCRYPTION_KEY`; deploy.
-3. Set `BASE_URL` to the `onrender.com` URL; redeploy; confirm `/api/health`.
-4. Configure SMTP + sender authentication; run a real signup and reset.
-5. Enable Turnstile; sign up in a private window; confirm the challenge runs.
-6. Attach the domain; wait for the cert; repeat signup on the real domain.
-7. Turn on the uptime monitor against `https://yourdomain/api/health`.
-8. Run one independent export (`pg_dump` + bucket copy), verify the dump lists
-   all five tables, and store both off Supabase.
-9. Run the production smoke-test list (item 14) from a clean browser profile.
-10. Invite the first handful of users; watch logs for the first hour.
+**Supabase first** — the blueprint prompts for these values exactly once, at
+creation, and adding a variable to `render.yaml` later does not re-prompt.
+
+1. Resume the project if the dashboard says paused.
+2. Confirm the five tables. If the editor is empty, SQL editor → paste
+   [db/schema.sql](../db/schema.sql) → Run (it is `create table if not exists`).
+3. Confirm a **private** bucket named `photos` (Storage → New bucket).
+4. Copy the **session-pooler** URI (port 5432, not transaction mode 6543 and not
+   the IPv6-only `db.<ref>` host), the project URL, and the `service_role` key.
+   Generate the encryption key fresh:
+   `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+   That key is permanent — rotating it makes existing stored Gemini keys
+   unreadable.
+
+**Render:**
+
+5. **New +** → **Blueprint** → connect GitHub → pick the repo, branch `main`. It
+   reads `render.yaml` and shows one Docker service, starter plan, health check
+   `/api/health`, **no disk**. The starter plan needs a card on the account.
+6. Fill the prompted variables in this order: `ENCRYPTION_KEY`, `DATABASE_URL`,
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, then the `SMTP_*` set (skip it
+   and nobody can verify a mailbox), then Turnstile if you have keys. Leave
+   `BASE_URL` blank — you don't know the hostname yet.
+   `SUPABASE_STORAGE_BUCKET` is already `photos` in the file, no prompt.
+7. Create the Blueprint and watch the first deploy's logs. You want
+   `Supabase Storage bucket "photos" reachable` and then `Thriftly backend …`.
+   `Storage is configured but unusable` means the bucket name or key is wrong,
+   and the deploy failed on purpose rather than serving an app that can't store
+   photos.
+8. Set `BASE_URL` to `https://<service>.onrender.com`, save, let it redeploy.
+
+**Prove it, in this order:**
+
+9. `curl -s https://<host>/api/ready` → `{"ok":true,"db":"pg","storage":"ok"}`.
+   Any `"db":"sqlite"` means `DATABASE_URL` didn't reach the process.
+10. Sign up, then look in Supabase → Table editor → `users` for that row. That is
+    the difference between "the ping answered" and "this app writes here".
+11. Connect a Gemini key, scan a photo, then Supabase → Storage → `photos`:
+    one object named like `a1b2…32hex.jpg` (the name is the draft's photo id).
+12. `curl -I https://<host>/api/photos/<that id>` → 200 `image/jpeg`. Delete the
+    draft and watch the object leave the bucket.
+
+Then: Turnstile on, domain attached, monitor pointed at `/api/ready`, and one
+independent export taken (item 12).
+
+If an upload fails, the log names the cause: `Supabase Storage upload failed
+(400)` is the bucket name or its existence, `(401)`/`(403)` is not the
+service-role key.
 
 ## If something goes wrong
 
@@ -106,6 +147,9 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
   preferably restoring into a new service before switching the domain.
 - **Email broken:** users can still request a resend; if SMTP is down, fix the
   provider first — no verification means no new logins.
+- **Photos fail but logins work:** `/api/ready` returns 503 with
+  `storage:"unreachable"` and the log names the bucket check. Fix the bucket
+  name or key in Render → Environment; the database is fine.
 - **Abuse spike:** tighten the rate limits in `server.js` (single process, so
   the in-memory limiter is authoritative), enable Turnstile if it was off, and
   block at the proxy if needed.

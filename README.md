@@ -191,8 +191,10 @@ plus an independent export are the backup story
 ([docs/backup-restore.md](docs/backup-restore.md)). [docs/SUPABASE.md](docs/SUPABASE.md)
 is the runbook for standing that up, and for moving an existing SQLite instance
 (data and photo copy scripts included). `/api/health`
-stays a pure liveness check for Render; `/api/ready` pings the database, so
-point an external uptime monitor at that one.
+stays a pure liveness check for Render; `/api/ready` pings the database **and**
+asks Supabase for the bucket by name, so point an external uptime monitor at
+that one — it returns 503 when either is down, and the server refuses to boot if
+the bucket doesn't answer.
 
 **Launch readiness:** [docs/LAUNCH.md](docs/LAUNCH.md) is the ordered
 checklist for a real launch — repo/CI, SMTP, CAPTCHA, Render, backups,
