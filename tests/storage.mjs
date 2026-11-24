@@ -525,6 +525,23 @@ async function heicRejectionFlow(token) {
   const sniffed = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: mislabelled });
   assert.equal(sniffed.status, 415, 'a HEIC labelled as JPEG is still refused');
 
+  // Some clients label any upload as octet-stream. The signature check runs
+  // before the type allow-list, so this still gets the HEIC instruction instead
+  // of a generic "unsupported image type" that tells the user nothing.
+  const octet = new FormData();
+  octet.append('photo', new Blob([heicBuffer()], { type: 'application/octet-stream' }), 'IMG_0003.heic');
+  const octetRes = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: octet });
+  assert.equal(octetRes.status, 415, 'a HEIC sent as application/octet-stream is refused as HEIC');
+  assert.match((await json(octetRes)).error || '', /HEIC/i, 'and still names HEIC, not the content type');
+
+  // The converse, so the sniff can't swallow genuinely unsupported input: a
+  // non-image keeps the plain 400 and never reaches the image pipeline.
+  const notAnImage = new FormData();
+  notAnImage.append('photo', new Blob([Buffer.from('just some text')], { type: 'text/plain' }), 'notes.txt');
+  const plain = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: notAnImage });
+  assert.equal(plain.status, 400, 'a non-image is a 400, not a HEIC message and not a 500');
+  assert.match((await json(plain)).error || '', /Unsupported image type/, 'and says so plainly');
+
   assert.equal(await draftCount(), before, 'a refused upload leaves no draft behind');
 }
 

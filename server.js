@@ -472,15 +472,18 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
       'That looks like an iPhone HEIC photo, which Thriftly can\'t read directly. ' +
       'On the iPhone: Settings → Camera → Formats → Most Compatible, then retake it — ' +
       'or open Photos, share/export the photo as JPEG and upload that.';
+    // Signature before the declared type: a HEIC uploaded as image/heic, as
+    // image/jpeg, or as application/octet-stream (some clients label uploads
+    // that way) should all get the same instruction rather than "unsupported
+    // image type: application/octet-stream".
+    if (looksLikeHeic(req.file.buffer)) return res.status(415).json({ error: heicMessage });
+
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     if (!allowed.includes(req.file.mimetype)) {
-      const isHeicType = /image\/hei[cf]/i.test(req.file.mimetype);
-      return res.status(isHeicType ? 415 : 400).json({
-        error: isHeicType ? heicMessage : `Unsupported image type: ${req.file.mimetype}. Use jpeg, png, gif, or webp.`,
+      return res.status(400).json({
+        error: `Unsupported image type: ${req.file.mimetype}. Use jpeg, png, gif, or webp.`,
       });
     }
-    // A client that mislabels a HEIC as image/jpeg still gets the useful message.
-    if (looksLikeHeic(req.file.buffer)) return res.status(415).json({ error: heicMessage });
 
     // One resize pass serves both consumers: the (smaller) same image goes to
     // Gemini and to disk. The upload never survives in full size.
