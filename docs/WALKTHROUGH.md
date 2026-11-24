@@ -11,7 +11,7 @@ key and fills the same shapes.
 |---|---|
 | Email | `demo@thriftly.local` |
 | Password | `demo-pass-1234` |
-| State | email verified, privacy policy `2026-11-18` accepted |
+| State | email verified, privacy policy `2026-11-24` accepted |
 | Drafts | 2 — one with listings on all four platforms, one not yet drafted |
 
 - **Reset it** any time with `npm run seed:demo` (replaces the account and its drafts).
@@ -95,7 +95,7 @@ go. The button confirms and returns you to the login screen. Re-run
 
 ### 7. The policy
 
-The footer links to `/privacy.html` — versioned (`2026-11-18`), plain language,
+The footer links to `/privacy.html` — versioned (`2026-11-24`), plain language,
 listing what's stored, what isn't, the three third parties (Google Gemini via
 *your* key, the SMTP provider, Cloudflare Turnstile when enabled, plus hosting),
 retention, rights (delete / export / disconnect key), and security. Each signup

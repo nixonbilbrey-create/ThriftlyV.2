@@ -183,7 +183,7 @@ image):
 | `PORT` | optional | Listen port (Render injects it; defaults to 10000 in Docker, 3001 locally) |
 
 > Turning on Turnstile means Cloudflare processes signup visitors' IP
-> addresses — the privacy policy (version 2026-11-18) already discloses it in
+> addresses — the privacy policy (version 2026-11-24) already discloses it in
 > the third-party list; leaving the keys blank keeps the CAPTCHA off.
 
 **Postgres + Supabase Storage:** set `DATABASE_URL`, `SUPABASE_URL`,
