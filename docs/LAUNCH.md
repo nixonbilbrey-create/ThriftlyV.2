@@ -21,7 +21,7 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 | 8 | Turnstile site + secret keys set | you | Signup on the live origin shows the challenge and rejects a missing token |
 | 9 | **Prove the backend:** `/api/ready` on the live origin | you | `{"ok":true,"db":"pg","storage":"ok"}` — `db:"sqlite"` means `DATABASE_URL` never arrived |
 | 10 | **Prove writes:** signup row, then a scanned photo | you | Row in Supabase `users`; object in the `photos` bucket; `/api/photos/<id>` serves it; deleting the draft removes it |
-| 11 | Confirm the Supabase plan's backup/PITR window | you | Dashboard shows daily backups (and PITR if the plan includes it) |
+| 11 | Confirm the Supabase plan's backup/PITR window | you | Dashboard shows daily backups (and PITR if the plan includes it). **Careful: the free plan has no automatic backups at all** — there is nothing to confirm, and items 12–13 are then your *only* backups, not optional extras |
 | 12 | Independent export off Supabase (`pg_dump` + a bucket copy to R2/S3/B2) | you | One dump and one photo archive exist outside Supabase |
 | 13 | Restore drill into a scratch project | you | Restored app boots, login works, drafts and a photo load |
 | 14 | External uptime monitor on `/api/ready` (and `/api/health` for liveness) | you | An alert within minutes of a database **or Storage** outage |
@@ -69,9 +69,11 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 - Check email deliverability: send a reset to Gmail, Outlook, and one corporate
   address; confirm SPF/DKIM pass in the headers.
 - Add a second pair of eyes on abuse: review signups, drafts, and 429 rates.
-- Decide the data-retention story in writing (Supabase backups and your exports
-  keep account data after deletion for their retention window; say so in the
-  privacy policy if that window outlives what the page implies).
+- Decide the data-retention story in writing. On a paid plan, Supabase backups
+  and your own exports keep account data after deletion for their retention
+  window — the privacy policy now says so, and says that photos are in no
+  backup. On the free plan there are no automatic backups, so what survives a
+  deletion is exactly your own exports; keep that window short and deliberate.
 - Pin the Node version in CI/Docker if you want reproducibility beyond
   `node:22-slim` moving under you; bump dependencies deliberately, not on
   deploy day.
@@ -159,5 +161,6 @@ service-role key.
 - A stranger can sign up, verify, connect a key, scan, and delete their account
   without help.
 - Email arrives reliably; the CAPTCHA is on.
-- Backups exist in two places, and you have restored one.
+- Backups exist in two places, and you have restored one. On Supabase's free
+  plan that means two *of your own* copies — the platform keeps none.
 - An outage would page you, not be discovered by a user.

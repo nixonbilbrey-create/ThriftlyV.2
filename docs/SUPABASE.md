@@ -174,7 +174,9 @@ name or existence, `(401)`/`(403)` is not the service-role key.
 ## Backups and deletion
 
 Supabase's automated backups and PITR depend on the plan — check what your
-project actually has, and keep an independent export either way. Account and
+project actually has, and keep an independent export either way. On the **free
+plan there are no automatic backups**, and on every plan the database backup
+excludes Storage objects, so the bucket needs its own copy. Account and
 draft deletion already go through `deletePhoto()` in [photos.js](../photos.js),
 which removes the Storage object when Storage is configured and the local file
 otherwise — the same code path serves both backends, so there is nothing extra

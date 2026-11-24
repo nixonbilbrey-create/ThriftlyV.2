@@ -226,8 +226,11 @@ monitoring and the first post-launch week. Terms of Service live at
    one to add on top.
 
 **Backups:** nothing durable sits on the Render host, so there is no disk to
-snapshot. Supabase keeps daily backups of the database (PITR depends on the
-plan), which covers "a row was deleted" but not "the provider account is gone".
+snapshot. Supabase keeps daily backups of the **database** on paid plans only —
+7 days on Pro, 14 on Team, up to 30 on Enterprise, and **none at all on the free
+plan** — and no plan's database backup includes the Storage objects that are your
+photos. Where they exist they cover "a row was deleted" but not "the provider
+account is gone".
 The second layer is an independent export — `pg_dump` of `DATABASE_URL` plus a
 copy of the `photos` bucket — kept off Supabase. Both commands, the restore
 drill and the definition of done are in
