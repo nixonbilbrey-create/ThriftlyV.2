@@ -150,9 +150,12 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
 
 ## Deploying (Render profile)
 
-The app is a long-running Node process with its own SQLite db + photo
-files, so it needs a container host with a persistent disk — Render is
-the reference target here (starter plan + 1 GB disk ≈ $7.25/mo).
+In production the app is a stateless container: Supabase Postgres holds accounts
+and drafts, Supabase Storage holds photos, so nothing durable lives on the host
+and a redeploy or restart is free. It is still a long-running Node process, so
+it needs a container host — Render is the reference target here (starter plan,
+no disk, ≈ $7/mo). The SQLite + local-photo shape remains for local development
+and tests.
 Everything durable lives under `data/` by default (SQLite at
 `data/thriftly.db`, photos in `data/photos/`), so the Render disk
 mounts once at `/app/data` and covers both. `render.yaml` declares it;

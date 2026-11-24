@@ -1,17 +1,19 @@
 # Render Blueprints spec — deploy with "New +" → Blueprint, or the manifest is
-# picked up automatically. The disk is the important part: everything durable
-# (SQLite db + photo files) lives under /app/data, so a single 1 GB disk keeps
-# all user data across deploys and restarts.
+# picked up automatically.
+#
+# No persistent disk. With DATABASE_URL set, accounts and drafts live in Supabase
+# Postgres and photos in a private Supabase Storage bucket, so the container is
+# disposable: a redeploy, a restart or a second instance changes nothing. The
+# app refuses to boot in production with DATABASE_URL but no Storage credentials,
+# which is what keeps photos off this ephemeral filesystem.
 services:
   - type: web
     name: thriftly
     runtime: docker
     plan: starter
+    # Render restarts the service when this fails, so it stays a liveness check;
+    # the database ping lives on /api/ready, which the uptime monitor watches.
     healthCheckPath: /api/health
-    disk:
-      name: thriftly-data
-      mountPath: /app/data
-      sizeGB: 1
     envVars:
       - key: ENCRYPTION_KEY
         sync: false # 64-char hex: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -35,18 +37,8 @@ services:
         sync: false # public site key — leave blank to keep the CAPTCHA off
       - key: TURNSTILE_SECRET
         sync: false # set WITH the site key; fails closed when configured
-      - key: BACKUP_INTERVAL_HOURS
-        value: "24" # nightly in-process backup (Render cron can't read this disk)
-      - key: BACKUP_DIR
-        value: /app/data/backups # inside the mounted disk
-      - key: BACKUP_RETENTION_DAYS
-        value: "7"
-      - key: BACKUP_UPLOAD_CMD
-        sync: false # rclone/aws copy of {file} + {sha256} to off-provider storage
-      # Supabase: when DATABASE_URL is set the app uses Postgres + Storage and
-      # the disk/backup vars above are unused. Set these before relying on
-      # multi-instance deployment; keep the SQLite disk until Postgres has run
-      # cleanly for a full backup cycle (see docs/SUPABASE.md).
+      # Supabase — required. DATABASE_URL selects the Postgres data layer;
+      # the Storage trio is what the boot guard insists on. See docs/SUPABASE.md.
       - key: DATABASE_URL
         sync: false # Supabase session pooler URI (port 5432), not the direct IPv6 host
       - key: SUPABASE_URL

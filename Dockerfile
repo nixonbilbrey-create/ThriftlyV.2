@@ -1,6 +1,7 @@
 # Thriftly — Express + Postgres/SQLite + sharp
-# Runtime honors PORT (Render injects it). With DATABASE_URL the app uses
-# Supabase Postgres + Storage; otherwise /app/data holds the SQLite db + photos.
+# Runtime honors PORT (Render injects it). In production DATABASE_URL is set and
+# the app uses Supabase Postgres + Storage, so the image writes nothing durable;
+# without it (local dev, tests) SQLite and photos live under /app/data.
 FROM node:22-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ \
@@ -20,8 +21,8 @@ COPY package.json package-lock.json* ./
 COPY server.js db.js db-pg.js auth.js mailer.js gemini.js photos.js ./
 COPY scripts ./scripts
 COPY public ./public
-# Runs as root by default: Render bind-mounts its persistent disk at /app/data
-# root-owned, which a non-root user can't write to without an entrypoint chown.
-# Single-tenant container — acceptable; note it in the deploy checklist.
+# Runs as root by default: there is no disk to mount, but sharp/build artefacts
+# and the app's own data dir are root-owned, and a non-root user would need an
+# entrypoint chown for the SQLite fallback. Single-tenant container — acceptable.
 EXPOSE 10000
 CMD ["node", "server.js"]

@@ -1,18 +1,18 @@
 # Supabase migration (Postgres + Storage)
 
-Thriftly ships on SQLite + a local photo directory. This is the runbook for
-moving it to Supabase Postgres and Supabase Storage, and for deploying the
-result on Render.
+Thriftly launches on Supabase Postgres + Supabase Storage. This is the runbook
+for standing that up on Render, and for moving an existing SQLite instance over
+if you have one to carry (a fresh launch skips step 5).
 
 **Current status:** the schema and private `photos` bucket are applied to the
-Supabase project. The app now has an async Postgres data layer
-([db-pg.js](../db-pg.js)) and a Supabase Storage photo backend, selected when
-`DATABASE_URL` is set; without it the app still runs on SQLite, which is also
-what the smoke tests use. The async layer is covered by `npm run test:pg`, which builds a throwaway
-schema, exercises every table and drops it again; CI runs it against a local
-`postgres:17` service. It has **not yet been exercised against the live
-project** — run the copy scripts and a full smoke pass with real credentials
-before switching production traffic.
+Supabase project. The app boots on Postgres in production mode, and the whole
+auth path works against it — signup → verify → login → `/api/auth/me`, with the
+rows landing in Postgres and `/api/ready` reporting `pg`. `npm run test:pg`
+exercises every table against a throwaway schema; CI runs that and the smoke
+suite against a local `postgres:17` service. It has **not yet run against the
+live project** — the first Render deploy is that test, followed by the stranger
+smoke pass in [LAUNCH.md](LAUNCH.md). `DATABASE_URL` unset still means SQLite,
+which is what local development and the tests use.
 
 The pairing is enforced at boot: a production process with `DATABASE_URL` set
 but no Storage credentials exits with an explanatory message instead of
@@ -77,7 +77,10 @@ The service-role key bypasses row-level security. It is server-only: never put
 it in `public/`, never return it from an API, and rotate it if it leaks. The
 browser continues to use only Thriftly's `/api/photos/:id` route.
 
-## 5. Copy the data
+## 5. Copy existing data (skip on a fresh launch)
+
+This step is only for an instance that already has users and drafts on SQLite.
+A launch with no real users has nothing to move: go straight to step 6.
 
 With the app still on SQLite (so writes are consistent), run:
 
@@ -130,7 +133,8 @@ Supabase:
 
 - `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
   `SUPABASE_STORAGE_BUCKET` added as secrets;
-- no persistent disk (remove the `disk:` block only after cutover is verified);
+- no persistent disk — `render.yaml` already omits it, so the container writes
+  nothing durable and a redeploy or a second instance changes nothing;
 - `BASE_URL` set to the public origin;
 - SMTP and Turnstile configured as in [LAUNCH.md](LAUNCH.md).
 

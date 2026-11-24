@@ -13,15 +13,15 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 |---|---|---|---|
 | 1 | Push the repo to GitHub | you | `main` is on GitHub; first Actions run is green |
 | 2 | Replace the README badge `OWNER` placeholder | you | Badge renders "passing" |
-| 3 | Create the Render service from `render.yaml` | you | Service is live with a 1 GB disk at `/app/data` |
+| 3 | Create the Render service from `render.yaml` | you | Service is live; no disk — data lives in Supabase |
 | 4 | Generate a fresh `ENCRYPTION_KEY` for production | you | Render env var is set; server booted with it (never reuse the dev key) |
 | 5 | Set `BASE_URL` to the public origin and redeploy | you | Verification/reset emails link to the real host |
 | 6 | SMTP provider configured (Brevo relay recommended) | you | A real signup receives the verification email; reset arrives too |
 | 7 | Sender domain authenticated (SPF + DKIM at the provider) | you | Mail lands in the inbox, not spam, for Gmail and Outlook |
 | 8 | Turnstile site + secret keys set | you | Signup on the live origin shows the challenge and rejects a missing token |
-| 9 | `BACKUP_INTERVAL_HOURS=24` and `BACKUP_DIR=/app/data/backups` | repo (done in `render.yaml`) | Archive appears in the disk after a day (or force one via Shell) |
-| 10 | Off-provider backup copy (`BACKUP_UPLOAD_CMD` to R2/S3/B2) | you | One archive + checksum exist outside Render |
-| 11 | Restore drill on a scratch copy | you | Restored app boots, login works, drafts and a photo load |
+| 9 | Confirm the Supabase plan's backup/PITR window | you | Dashboard shows daily backups (and PITR if the plan includes it) |
+| 10 | Independent export off Supabase (`pg_dump` + a bucket copy to R2/S3/B2) | you | One dump and one photo archive exist outside Supabase |
+| 11 | Restore drill into a scratch project | you | Restored app boots, login works, drafts and a photo load |
 | 12 | External uptime monitor on `/api/ready` (and `/api/health` for liveness) | you | You get an email/phone alert within minutes of an outage or a database outage |
 | 13 | Custom domain + HTTPS | you | `https://yourdomain` serves the app; HTTP redirects; cert valid |
 | 14 | Smoke-test production like a stranger | you | Sign up → verify → login → Gemini key → scan → drafts → export → delete all pass |
