@@ -6,9 +6,13 @@ const path = require('path');
 const crypto = require('crypto');
 const { version: APP_VERSION } = require('./package.json');
 
-if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY.length !== 64) {
+// Hex, not merely 64 characters: a passphrase of the right length decodes to a
+// handful of bytes (or none) and would only fail on the first scan, which is the
+// worst place to discover it.
+const isEncryptionKey = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v);
+if (!isEncryptionKey(process.env.ENCRYPTION_KEY)) {
   console.error(
-    'ENCRYPTION_KEY is missing or invalid in .env — it must be a 64-character hex string (32 bytes).\n' +
+    'ENCRYPTION_KEY is missing or invalid in .env — it must be 64 hex characters (32 bytes), not a passphrase.\n' +
     'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
   );
   process.exit(1);
@@ -41,7 +45,7 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 // policy changes — every signup records it, and /api/auth/me reports it back.
 // Must match the version rendered in public/privacy.html: the smoke test fails
 // if the served page and this constant disagree.
-const PRIVACY_VERSION = '2026-11-24';
+const PRIVACY_VERSION = '2026-11-24b';
 
 const app = express();
 // The app always runs behind a TLS-terminating proxy in production (Render,

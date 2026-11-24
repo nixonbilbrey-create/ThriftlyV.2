@@ -167,7 +167,7 @@ image):
 
 | Variable | Required | What it does |
 |---|---|---|
-| `ENCRYPTION_KEY` | yes | 64-char hex (32 bytes); encrypts each user's Gemini key at rest. Server refuses to start without it |
+| `ENCRYPTION_KEY` | yes | 64 hex characters (32 bytes); encrypts each user's Gemini key at rest. The server refuses to start without it, and rejects a passphrase of the same length |
 | `BASE_URL` | after first deploy | Public origin used to build verification/reset email links |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | for real email | SMTP relay (e.g. `smtp-relay.brevo.com`, 587, `false` for STARTTLS). Absent → dev mode prints links and returns them in API responses — do not ship that way |
 | `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |

@@ -26,9 +26,10 @@ function newToken() {
 // ---------- at-rest encryption for stored Gemini keys (AES-256-GCM) ----------
 function getEncryptionKey() {
   const hex = process.env.ENCRYPTION_KEY;
-  if (!hex || hex.length !== 64) {
+  // Same check as the boot guard: a 64-character passphrase is not a key.
+  if (typeof hex !== 'string' || !/^[0-9a-f]{64}$/i.test(hex)) {
     throw new Error(
-      'ENCRYPTION_KEY must be set in .env as a 64-character hex string (32 bytes). ' +
+      'ENCRYPTION_KEY must be set in .env as 64 hex characters (32 bytes), not a passphrase. ' +
       'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
     );
   }

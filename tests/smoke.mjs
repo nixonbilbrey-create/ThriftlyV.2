@@ -570,6 +570,57 @@ async function configGuardFlow() {
   assert.match(boot.stderr, /GEMINI_API_BASE is set in production/, 'the refusal names the variable');
 }
 
+// ENCRYPTION_KEY must be hex, not merely 64 characters. A passphrase of the right
+// length used to clear boot and then blow up inside encrypt() — on a user's first
+// scan, in production, as a 500 — so the boot guard and the crypto layer have to
+// reject the same values.
+function encryptionKeyGuardFlow() {
+  const runNode = (args, extraEnv) => spawnSync('node', args, {
+    encoding: 'utf8',
+    timeout: 10000,
+    env: {
+      ...process.env,
+      PORT: '3131',
+      DB_PATH: `${TEST_DIR}/key-guard.db`,
+      PHOTOS_DIR: `${TEST_DIR}/photos`,
+      BASE_URL: 'http://127.0.0.1:3131',
+      ...extraEnv,
+    },
+  });
+
+  // 64 characters, not one of them hex: exactly what the length-only check let
+  // through to fail later.
+  const passphrase = 'z'.repeat(64);
+  assert.equal(passphrase.length, 64, 'the rejected value must be the length the old check accepted');
+  const boot = runNode(['server.js'], { ENCRYPTION_KEY: passphrase });
+  assert.equal(boot.status, 1, 'a 64-character passphrase must stop boot, not fail on the first scan');
+  assert.match(boot.stderr, /64 hex characters/i, 'the refusal says the key must be hex');
+  assert.match(boot.stderr, /randomBytes/, 'and shows how to generate a real one');
+
+  const short = runNode(['server.js'], { ENCRYPTION_KEY: 'abc123' });
+  assert.equal(short.status, 1, 'a short key still stops boot');
+
+  const missing = runNode(['server.js'], { ENCRYPTION_KEY: '' });
+  assert.equal(missing.status, 1, 'a missing key still stops boot');
+
+  // The crypto layer must agree with the guard, or a bad key could still reach
+  // encrypt() by another path.
+  const direct = runNode([
+    '-e',
+    "process.env.ENCRYPTION_KEY = 'z'.repeat(64); const { encrypt } = require('./auth'); " +
+    "try { encrypt('x'); process.stdout.write('accepted'); } catch (e) { process.stdout.write('refused:' + e.message); }",
+  ], { ENCRYPTION_KEY: '' });
+  assert.match(direct.stdout, /refused:.*hex/i, 'encrypt() refuses the same value the boot check does');
+
+  // And a genuine key still works, upper-case hex included (it is hex either way).
+  const roundtrip = runNode([
+    '-e',
+    "process.env.ENCRYPTION_KEY = 'A'.repeat(64); const { encrypt, decrypt } = require('./auth'); " +
+    "process.stdout.write(decrypt(encrypt('hello')) === 'hello' ? 'roundtrip-ok' : 'mismatch');",
+  ], { ENCRYPTION_KEY: '' });
+  assert.match(roundtrip.stdout, /roundtrip-ok/, 'a real 64-hex key still encrypts and decrypts');
+}
+
 async function limiterChecks() {
   // Runs last: the authLimiter (shared by signup/resend/request-reset,
   // 10/hour/IP) is deliberately exhausted here so nothing earlier is affected.
@@ -624,6 +675,9 @@ try {
   const tCfg = Date.now();
   await configGuardFlow();
   console.log(`  ok   gemini endpoint override locked to tests (${Date.now() - tCfg}ms)`);
+  const tKey = Date.now();
+  encryptionKeyGuardFlow();
+  console.log(`  ok   ENCRYPTION_KEY must be hex, not just 64 characters (${Date.now() - tKey}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);
