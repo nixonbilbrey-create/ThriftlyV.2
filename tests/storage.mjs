@@ -25,6 +25,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const TEST_DIR = 'data-test/storage';
 const DB_PATH = `${TEST_DIR}/storage.db`;
 const BUCKET = 'photos-test';
+const STORAGE_CHECK_TTL_MS = 200;
 const SERVICE_KEY = 'test-service-role-key';
 
 const plainHeaders = { 'content-type': 'application/json' };
@@ -279,6 +280,8 @@ function startApp(storage, gemini) {
       SUPABASE_URL: storage.url,
       SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
       SUPABASE_STORAGE_BUCKET: BUCKET,
+      // Short TTL so the cache expiring is observable inside a test run.
+      STORAGE_CHECK_TTL_MS: String(STORAGE_CHECK_TTL_MS),
       GEMINI_API_BASE: `${gemini.url}/v1beta`,
       GEMINI_MODEL: 'test-model',
       SMTP_HOST: '',
@@ -406,22 +409,51 @@ async function apiFlows(storage, gemini) {
 // report 'ok' while Storage responds and 503 when it stops, driven here through
 // the fake's control plane so a dead bucket can't pass as healthy.
 async function readinessProvesBucket(storage) {
-  const healthy = await json(await fetch(`${BASE}/api/ready`));
-  assert.equal(healthy.ok, true, 'readiness ok while Storage answers');
-  assert.equal(healthy.storage, 'ok', 'readiness reports the bucket as ok');
-  assert.equal(healthy.db, 'sqlite', 'the payload still names the database backend');
+  // Count what actually reaches Storage: /api/ready is public, so a probe must
+  // not cost a Supabase request every time.
+  const bucketCalls = () => storage.requests.filter((r) => r.path.startsWith('/storage/v1/bucket/')).length;
+  const settle = () => sleep(STORAGE_CHECK_TTL_MS + 150);
+
+  const before = bucketCalls();
+  for (let i = 0; i < 5; i++) {
+    const res = await fetch(`${BASE}/api/ready`);
+    assert.equal(res.status, 200, 'readiness ok while Storage answers');
+    const body = await json(res);
+    assert.equal(body.storage, 'ok', 'readiness reports the bucket as ok');
+    assert.equal(body.db, 'sqlite', 'the payload still names the database backend');
+  }
+  assert.equal(bucketCalls() - before, 1, '5 probes inside the TTL must cost one Storage call, not five');
+
+  // A burst arriving at a cold cache must also cost one call: concurrent probes
+  // share the in-flight check rather than each starting their own.
+  await settle();
+  const burstStart = bucketCalls();
+  const burst = await Promise.all(Array.from({ length: 5 }, () => fetch(`${BASE}/api/ready`)));
+  assert.deepEqual(burst.map((r) => r.status), [200, 200, 200, 200, 200], 'concurrent probes all answer');
+  assert.equal(bucketCalls() - burstStart, 1, '5 concurrent probes must share one Storage call');
 
   await fetch(`${storage.url}/__control/fail`, { method: 'POST', body: 'yes' });
   try {
+    // Still inside the TTL: the cached success stands, and nothing is re-probed.
+    const cached = bucketCalls();
+    assert.equal((await fetch(`${BASE}/api/ready`)).status, 200, 'the cached result holds until it expires');
+    assert.equal(bucketCalls(), cached, 'no Storage call inside the TTL');
+
+    await settle();
     const down = await fetch(`${BASE}/api/ready`);
-    assert.equal(down.status, 503, 'an unreachable bucket must fail readiness');
+    assert.equal(down.status, 503, 'an unreachable bucket must fail readiness once the cache expires');
     const body = await json(down);
     assert.equal(body.storage, 'unreachable', 'readiness names Storage as the broken dependency');
     assert.match(body.detail || '', /bucket/, 'the detail names the bucket check');
+
+    const whileDown = bucketCalls();
+    assert.equal((await fetch(`${BASE}/api/ready`)).status, 503, 'a cached failure keeps failing');
+    assert.equal(bucketCalls(), whileDown, 'a cached failure is not re-probed inside the TTL');
   } finally {
     await fetch(`${storage.url}/__control/fail`, { method: 'POST', body: 'none' });
   }
 
+  await settle();
   assert.equal((await fetch(`${BASE}/api/ready`)).status, 200, 'readiness recovers when Storage does');
 }
 

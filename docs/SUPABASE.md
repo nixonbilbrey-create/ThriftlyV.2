@@ -27,7 +27,10 @@ operationally: credentials present is not the same as a working bucket, and
 accepted and the bucket exists. `/api/ready` reports the database backend **and**
 Storage (`"storage":"ok"`), returning 503 when either can't be reached, so an
 external monitor catches a Postgres *or* a Storage outage that `/api/health`
-would not.
+would not. Because that endpoint is public, the bucket answer is cached for
+`STORAGE_CHECK_TTL_MS` (10 s by default, failures included, concurrent probes
+sharing one request) — otherwise health-check traffic would become Storage
+traffic.
 
 ## 1. Resume the project
 

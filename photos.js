@@ -64,7 +64,7 @@ function storageEnabled() {
 // directly: GET /storage/v1/bucket/<name> answers 2xx only when the key is
 // accepted and the bucket exists, so a wrong SUPABASE_STORAGE_BUCKET surfaces at
 // boot and on /api/ready instead of on someone's first photo.
-async function checkStorage() {
+async function checkStorageUncached() {
   const config = storageConfig();
   if (!config) {
     return { ok: false, configured: false, reason: 'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are not set' };
@@ -91,6 +91,32 @@ async function checkStorage() {
       reason: `bucket "${config.bucket}" check failed: ${err.message}`,
     };
   }
+}
+
+// /api/ready is public and every uptime probe hits it, so an uncached check would
+// let any caller turn requests into Supabase Storage traffic — and a plain
+// health-check flood would do it by accident. Results (failures included) are
+// reused for STORAGE_CHECK_TTL_MS, and concurrent callers share one in-flight
+// request, so a burst at expiry still costs Storage a single call.
+const STORAGE_CHECK_TTL_MS = Number(process.env.STORAGE_CHECK_TTL_MS ?? 10000);
+let storageCheckCache = null; // { at, result }
+let storageCheckInFlight = null;
+
+async function checkStorage() {
+  if (storageCheckCache && Date.now() - storageCheckCache.at < STORAGE_CHECK_TTL_MS) {
+    return storageCheckCache.result;
+  }
+  if (!storageCheckInFlight) {
+    storageCheckInFlight = checkStorageUncached()
+      .then((result) => {
+        // Only cache a real answer: a negative TTL or a thrown error should not
+        // pin the bucket as broken.
+        if (STORAGE_CHECK_TTL_MS > 0) storageCheckCache = { at: Date.now(), result };
+        return result;
+      })
+      .finally(() => { storageCheckInFlight = null; });
+  }
+  return storageCheckInFlight;
 }
 
 function ensureDir() {
