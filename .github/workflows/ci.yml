@@ -50,6 +50,21 @@ jobs:
   docker:
     name: docker build
     runs-on: ubuntu-latest
+    # The image is also booted against a live Postgres below. Booting it only on
+    # SQLite would leave the one combination production actually runs —
+    # container + DATABASE_URL + Storage — untested until a deploy.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -73,6 +88,68 @@ jobs:
           echo "health check never came up — container logs:"
           docker logs thriftly-ci
           exit 1
+
+      # Use the postgres image's own client rather than the runner's, so this
+      # doesn't depend on whatever psql version the runner image happens to ship.
+      - name: Apply the Postgres schema
+        run: |
+          docker run --rm --network host -e PGPASSWORD=postgres \
+            -v "$PWD/db:/sql:ro" postgres:17 \
+            psql 'postgresql://postgres:postgres@127.0.0.1:5432/postgres' -f /sql/schema.sql
+
+      # Same image, now in the launch shape: Postgres for data, Storage for
+      # photos, no disk. --network host lets the container reach the service
+      # container on 127.0.0.1 exactly as the SQLite run reached its own port.
+      - name: Boot image against Postgres
+        run: |
+          set -euo pipefail
+          docker run -d --name thriftly-pg --network host \
+            -e ENCRYPTION_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+            -e DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/postgres' \
+            -e SUPABASE_URL='http://127.0.0.1:9' \
+            -e SUPABASE_SERVICE_ROLE_KEY='ci-not-a-real-key' \
+            -e BASE_URL='http://127.0.0.1:10000' \
+            thriftly:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:10000/api/ready > ready.json; then
+              echo "ready after ${i}s: $(cat ready.json)"
+              jq -e '.db == "pg"' ready.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "never became ready on Postgres — container logs:"
+          docker logs thriftly-pg
+          exit 1
+
+      # /api/ready only proves the ping. This proves the image writes through
+      # the Postgres data layer end to end, which is the thing a deploy depends on.
+      - name: Signup through the image lands rows in Postgres
+        run: |
+          set -euo pipefail
+          dbq() {
+            docker run --rm --network host -e PGPASSWORD=postgres postgres:17 \
+              psql 'postgresql://postgres:postgres@127.0.0.1:5432/postgres' -tAc "$1"
+          }
+          code=$(curl -sS -o signup.json -w '%{http_code}' \
+            -X POST http://127.0.0.1:10000/api/auth/signup \
+            -H 'content-type: application/json' \
+            -d '{"email":"ci@docker.test","password":"ci-docker-pass-1","agree":true}')
+          test "$code" = "201" || { echo "signup returned $code:"; cat signup.json; exit 1; }
+          link=$(jq -r '.devVerifyLink // empty' signup.json)
+          test -n "$link" || { echo 'no devVerifyLink in the signup response:'; cat signup.json; exit 1; }
+          curl -fsS "$link" > /dev/null
+          curl -fsS -X POST http://127.0.0.1:10000/api/auth/login \
+            -H 'content-type: application/json' \
+            -d '{"email":"ci@docker.test","password":"ci-docker-pass-1"}' > login.json
+          jq -e '.token | test("^[a-f0-9]{64}$")' login.json > /dev/null
+          test "$(dbq 'select count(*) from users')" = "1"
+          test "$(dbq 'select count(*) from sessions')" = "1"
+          echo 'image + Postgres: signup, verify, login, rows confirmed'
+
       - name: Clean up
         if: always()
-        run: docker rm -f thriftly-ci || true
+        run: |
+          docker rm -f thriftly-ci || true
+          docker rm -f thriftly-pg || true
+          rm -f ready.json signup.json login.json
