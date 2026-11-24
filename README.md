@@ -1,7 +1,6 @@
 # Thriftly Backend — multi-user, bring-your-own-key, Gemini-powered
 
-[![CI](https://github.com/OWNER/thriftly/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/thriftly/actions/workflows/ci.yml)
-<!-- Replace OWNER with your GitHub username or org after pushing the repo. -->
+[![CI](https://github.com/nixonbilbrey-create/ThriftlyV.2/actions/workflows/ci.yml/badge.svg)](https://github.com/nixonbilbrey-create/ThriftlyV.2/actions/workflows/ci.yml)
 
 Real accounts. Each user connects their own Gemini API key. Every scan and
 every generated listing runs on *their* key, not a shared one you pay for.
