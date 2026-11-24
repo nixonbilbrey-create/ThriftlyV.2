@@ -1,172 +1,146 @@
 # Backups and restore
 
-Everything Thriftly owns lives under `data/`:
+Production data lives in Supabase, not on the app's host:
 
-| Path | Contents |
+| Where | Contents |
 |---|---|
-| `data/thriftly.db` | Accounts, password hashes, sessions, verification/reset tokens, drafts |
-| `data/photos/` | Draft photos (resized JPEGs; filenames are the only access control) |
+| Supabase Postgres | Accounts, password hashes, sessions, verification/reset tokens, drafts |
+| Supabase Storage, private `photos` bucket | Draft photos (resized JPEGs; the 128-bit object id is the only access control) |
 
-Losing that directory means losing every account and every draft. Treat it like
-production data even while the app is small.
+The Render container is disposable — no disk, nothing durable on it — so a
+redeploy, a crash or a lost instance costs nothing. That also means the only
+thing between you and losing every account is what Supabase keeps and what you
+copy out of it yourself.
 
 ## Two layers, on purpose
 
-1. **Render's automatic disk snapshot** — Render snapshots an attached disk
-   once every 24 hours and keeps snapshots for 7 days
-   ([docs](https://render.com/docs/disks)). Good against "the disk was
-   deleted/destroyed", but it lives in the same provider account as the app.
-2. **Off-provider archives** — `scripts/backup.mjs` produces one tar.gz per run
-   (consistent SQLite snapshot + photos + sha256 sidecar) and can upload it
-   anywhere. This is the copy that survives "Render account problem".
+1. **Supabase's own backups.** Dashboard → Database → Backups. Daily backups on
+   the free plan; point-in-time recovery depends on what you're paying for.
+   Lives in the same provider account as the app, so it covers "a row was
+   deleted", not "the account is gone".
+2. **An independent export you keep elsewhere.** A `pg_dump` of the database plus
+   a copy of the bucket, stored off Supabase (R2/S3/B2, or a download you keep
+   on your own machine). This is the layer that survives a provider problem.
 
-A backup you have never restored is a guess. The last section is a drill — run
-it once now, not on the day you need it.
+Neither counts as a backup until one has been restored. The drill at the end is
+what turns them into one.
 
-## The scripts
+## The independent export
 
-`scripts/backup.mjs`
-
-```bash
-npm run backup
-# equivalent: node scripts/backup.mjs
-```
-
-- Takes an **online** SQLite snapshot with the SQLite backup API — safe while
-  the server is writing. It does not stop or lock the app.
-- Runs `PRAGMA integrity_check` on the snapshot and exits non-zero if it fails.
-- Copies `data/photos/` as-is and packs everything into
-  `backups/thriftly-<timestamp>.tar.gz` + `.sha256`.
-- Prunes local archives older than `BACKUP_RETENTION_DAYS` (default 7).
-- Config via env: `DB_PATH`, `PHOTOS_DIR`, `BACKUP_DIR`, `BACKUP_RETENTION_DAYS`,
-  `BACKUP_UPLOAD_CMD`.
-
-`scripts/restore.mjs`
+Two commands, both safe against the live app (they only read):
 
 ```bash
-npm run restore -- backups/thriftly-<timestamp>.tar.gz --target data --force
+# 1) database — consistent dump, no locking of the running service
+pg_dump "$DATABASE_URL" --format=custom --no-owner --no-privileges \
+  --file "thriftly-$(date +%F).dump"
+
+# 2) photos — the private bucket, object ids unchanged
+# --remote targets the linked hosted project (CLI v3 defaults to the local
+# stack); --experimental is still required on the storage subcommands.
+supabase --experimental storage cp --recursive --remote \
+  ss:///photos "./thriftly-photos-$(date +%F)"
 ```
 
-- Verifies the sha256 sidecar before extracting anything.
-- Extracts to a temp dir and runs `integrity_check` **before** touching `data/`.
-- Refuses a non-empty target unless `--force` is passed.
-- Deletes stale `*.db-wal` / `*.db-shm` files so old WAL pages can't mix with
-  restored data.
-
-## Running a backup on Render
-
-Backups must read the service's disk, so they run **inside** the service. Shell
-access is available on paid instances (Render docs:
-[SSH and shell access](https://render.com/docs/ssh)).
+- `pg_dump` against the **session pooler** URI works the same as against a direct
+  connection. Use a client at least as new as the server (Postgres 17), or it
+  refuses and tells you so.
+- The Storage copy needs the Supabase CLI (logged in and linked), or any S3
+  client against the project's Storage endpoint (dashboard → Storage → S3 access
+  keys). The CLI version is single-threaded and slow past a few thousand
+  objects — `-j` raises the parallelism, and a large bucket is easier through
+  the S3 endpoint. **Keep the object names.** A draft's image is
+  `/api/photos/<object id>`, so a restore that renames objects breaks every
+  draft image.
+- Check the dump opened cleanly before trusting it:
 
 ```bash
-# In the Render dashboard: your service → Shell
-cd /app
-BACKUP_DIR=/tmp/backups npm run backup
-sha256sum -c /tmp/backups/thriftly-*.tar.gz.sha256
+pg_restore --list thriftly-<date>.dump | grep -c "TABLE DATA"
 ```
 
-Keep archives **off the 1 GB disk** (`/tmp` is ephemeral, which is fine — the
-next step uploads them). Then get them off-provider with the upload hook:
+Five means it captured every table: `users`, `sessions`, `email_verifications`,
+`password_resets`, `drafts`.
 
-```bash
-# rclone configured with an R2/B2/S3 remote (recommended: no extra app changes)
-BACKUP_DIR=/tmp/backups \
-BACKUP_UPLOAD_CMD='rclone copy {file} r2:thriftly-backups/prod && rclone copy {sha256} r2:thriftly-backups/prod' \
-npm run backup
-```
+Then get both files somewhere else. An export sitting beside the thing it backs
+up is not a backup.
 
-```bash
-# AWS CLI alternative (install it in the image or run from a machine with the
-# archive downloaded first)
-BACKUP_UPLOAD_CMD='aws s3 cp {file} s3://my-bucket/thriftly/'
-```
+### On a schedule
 
-The image (`node:22-slim`) ships `tar`/`gzip` and Node but **not** `rclone` or
-`aws` — either bake one into the Dockerfile, or download the archive to your
-machine and upload from there. A one-off copy via `scp`/browser download is a
-perfectly valid off-provider backup for low-volume apps.
-
-### Scheduled backups inside the service
-
-`BACKUP_INTERVAL_HOURS=24` (already in `render.yaml`) makes the server run the
-same archive on a schedule, writing to `BACKUP_DIR`. Keep `BACKUP_DIR` inside
-`/app/data` so it survives redeploys. Render's cron jobs are separate services
-and cannot read this service's disk — that's why the schedule lives in the app.
-The scheduler logs `[backup] scheduled …` at boot and `[backup] wrote …` after
-each run; failures are logged and never crash the server.
-
-The schedule only produces the **local** archive. Set `BACKUP_UPLOAD_CMD` (or
-download the archive and upload it yourself) so a copy also exists
-off-provider — otherwise a provider-wide problem loses the app and its backups
-together.
+Supabase cannot run `pg_dump` for you, and Render has no cron that can read
+anything this service owns, so the export is yours to schedule: a GitHub Action
+with the connection string in repository secrets, `cron` on a machine you
+control, or any runner with `pg_dump` and the Supabase CLI. Daily is plenty at
+launch; Supabase's own backups cover the hours in between.
 
 ## Restore drill (do this before you need it)
 
-### A. Local drill — proves the archive is usable (5 minutes)
+### A. Restore into a scratch project (~10 minutes)
 
-```bash
-# 1) produce an archive from the dev database
-BACKUP_DIR=/tmp/bk npm run backup
+Never restore over live data until the restored copy has been served and
+checked.
 
-# 2) restore it somewhere that is NOT the live data dir
-npm run restore -- /tmp/bk/thriftly-*.tar.gz --target /tmp/restored-data --force
-
-# 3) boot the app against the restored copy and confirm it works
-PORT=3999 DB_PATH=/tmp/restored-data/thriftly.db \
-  PHOTOS_DIR=/tmp/restored-data/photos BASE_URL=http://localhost:3999 \
-  node server.js
-# in another terminal:
-curl -s localhost:3999/api/health
-# then log in to the UI with an existing account and open a draft + its photo
-```
-
-Passing checks: `integrity_check` is `ok` (the restore script enforces it),
-login succeeds, the draft list matches, and a photo URL loads.
-
-### B. Restore on Render (planned outage, ~15 minutes)
-
-Preferred: **restore into a new service, then switch over** — the live data is
-never overwritten until the restored copy is verified.
-
-1. Take a fresh backup of the current state first (the old data may contain
-   accounts created after the backup you're restoring).
-2. Create a new Render service from the same repo/image with its own disk at
-   `/app/data`, and the same env vars. Don't point your domain at it yet.
-3. In the new service's Shell, get the archive and restore:
+1. Create a scratch Supabase project (a local Postgres plus a second bucket
+   works too), then apply the schema if it is empty:
+   `psql "$SCRATCH_DATABASE_URL" -f db/schema.sql`.
+2. Restore into it:
 
    ```bash
-   cd /tmp
-   # download the archive + sidecar (any method: rclone, presigned URL, scp)
-   rclone copy r2:thriftly-backups/prod/thriftly-<timestamp>.tar.gz .
-   rclone copy r2:thriftly-backups/prod/thriftly-<timestamp>.tar.gz.sha256 .
-   cd /app
-   DATA_DIR=/app/data npm run restore -- /tmp/thriftly-<timestamp>.tar.gz --force
+   pg_restore --no-owner --no-privileges \
+     --dbname "$SCRATCH_DATABASE_URL" thriftly-<date>.dump
+   supabase --experimental storage cp --recursive --remote \
+     ./thriftly-photos-<date> ss:///photos
    ```
 
-4. Restart the new service, run the same checks as the local drill (health,
-   login, drafts, photo), then move the custom domain to it.
-5. Keep the old service's disk untouched until the new one has run clean for a
-   day — it's your rollback.
+3. Boot the app against the scratch pair and check it like a user:
 
-In-place restore (only when a new service isn't possible): run the same restore
-inside the Shell **with the app stopped or immediately before a manual
-restart**; the restore script removes stale WAL files, but the running process
-still holds the old database open. Restart right after and re-run the checks.
+   ```bash
+   PORT=3999 DATABASE_URL="$SCRATCH_DATABASE_URL" \
+     SUPABASE_URL="$SCRATCH_SUPABASE_URL" \
+     SUPABASE_SERVICE_ROLE_KEY="$SCRATCH_SERVICE_ROLE_KEY" \
+     BASE_URL=http://localhost:3999 node server.js
+   curl -s localhost:3999/api/ready        # {"ok":true,"db":"pg"}
+   ```
 
-### C. Recovering from a Render disk snapshot
+   Then log in with an existing account, open the draft list, and load one draft
+   photo. All three passing is what "the backup works" means — `/api/ready`
+   alone only proves the database answered.
 
-Dashboard → service → Disks → snapshot → restore. This is whole-disk and
-replaces everything under the mount, including photos. It's the fastest path
-when the disk itself is the casualty, but it restores the disk as of the
-snapshot time — up to 24 hours of data can be missing. Use it to get service
-back, then cross-check against your newest off-provider archive.
+### B. Production drill
+
+The same steps against a scratch Render service pointed at the scratch project.
+Verify there, then move the domain. Because the service is stateless, switching
+is an env-var change — there is no volume to copy between services and no
+window where a disk holds the only copy.
+
+### C. Recovering from Supabase's own backups
+
+Dashboard → Database → Backups (or PITR, if the plan has it) → restore. Fastest
+when the database itself is the casualty; it restores the database to a point in
+time within the plan's window. Photos are **not** included — reconcile the
+bucket against your independent export afterwards.
+
+## The SQLite shape (local development, and only that)
+
+`npm run backup` and `npm run restore` still exist and still work: a checksummed
+online SQLite snapshot plus `data/photos/`, integrity-checked before anything is
+restored. They serve local development, the smoke tests, and any instance that
+has not moved to Supabase.
+
+Under Postgres the in-process scheduler deliberately does nothing; at boot it
+logs:
+
+```
+[backup] Postgres backend — use Supabase backups/PITR instead of the SQLite scheduler
+```
+
+so `BACKUP_INTERVAL_HOURS` is ignored. Don't reintroduce it as the production
+backup story: it would archive a SQLite file the app isn't writing to and photos
+it isn't storing.
 
 ## What "done" looks like
 
-- [ ] One archive created, checksum verified, and downloaded/uploaded off Render
-- [ ] Nightly scheduler enabled and producing archives (check the log or the
-      `BACKUP_DIR` listing a day after deploy)
-- [ ] Local restore drill (A) passed end-to-end
-- [ ] Upload command (or manual routine) runs on a schedule you'll actually keep
-- [ ] You know your RPO: ≤24 h (snapshots) and up to the last upload (archives)
+- [ ] Supabase plan's backup window confirmed in the dashboard
+- [ ] One `pg_dump` + bucket export stored **off** Supabase
+- [ ] `pg_restore --list` shows all five tables
+- [ ] Restore drill (A) passed: `/api/ready` ok, login, draft list, photo
+- [ ] The export runs on a schedule you will actually keep
+- [ ] You know your RPO: Supabase's backup window, or your last export

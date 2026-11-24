@@ -46,26 +46,28 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 - `/api/health` reports only `ok`, version and uptime — no filesystem paths —
   and `/api/ready` adds a database ping (503 when the database is unreachable),
   so liveness and readiness can be monitored separately.
-- Backups: checksummed online SQLite snapshot + photos (`npm run backup`),
-  verified restore (`npm run restore`), and an in-process nightly scheduler
-  (`BACKUP_INTERVAL_HOURS`) because Render has no cron that can read a service's
-  disk. Runbook and drills: [backup-restore.md](backup-restore.md).
+- Backups: production data lives in Supabase (Postgres + private Storage
+  bucket), so the story is Supabase's own backups plus an independent
+  `pg_dump` + bucket export kept off-provider. There is no disk to snapshot and
+  `render.yaml` carries no `BACKUP_*`. Runbook and drills:
+  [backup-restore.md](backup-restore.md).
 - Account export (JSON incl. photos) and irreversible account deletion.
 - `/terms.html` alongside `/privacy.html`, both linked from signup and the
   footer.
 
 ## P1 — first two weeks after launch
 
-- Watch the API log and Render metrics daily: 5xx rate, latency, disk usage.
-- Make one backup download by hand and verify its checksum; confirm the
-  off-provider copy is actually landing.
+- Watch the API log and Render metrics daily: 5xx rate, latency, plus
+  Supabase's database and storage metrics.
+- Run one independent export by hand (`pg_dump` + bucket copy), confirm it
+  lands off Supabase, and check `pg_restore --list` shows all five tables.
 - Re-run the restore drill once with production data (into a scratch service).
 - Check email deliverability: send a reset to Gmail, Outlook, and one corporate
   address; confirm SPF/DKIM pass in the headers.
 - Add a second pair of eyes on abuse: review signups, drafts, and 429 rates.
-- Decide the data-retention story in writing (backups keep account data after
-  deletion for up to `BACKUP_RETENTION_DAYS`; say so in the privacy policy if
-  you keep them longer).
+- Decide the data-retention story in writing (Supabase backups and your exports
+  keep account data after deletion for their retention window; say so in the
+  privacy policy if that window outlives what the page implies).
 - Pin the Node version in CI/Docker if you want reproducibility beyond
   `node:22-slim` moving under you; bump dependencies deliberately, not on
   deploy day.
@@ -90,15 +92,15 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 5. Enable Turnstile; sign up in a private window; confirm the challenge runs.
 6. Attach the domain; wait for the cert; repeat signup on the real domain.
 7. Turn on the uptime monitor against `https://yourdomain/api/health`.
-8. Force one backup via Render Shell (`npm run backup`), download it, check the
-   checksum, and upload it off-provider.
+8. Run one independent export (`pg_dump` + bucket copy), verify the dump lists
+   all five tables, and store both off Supabase.
 9. Run the production smoke-test list (item 14) from a clean browser profile.
 10. Invite the first handful of users; watch logs for the first hour.
 
 ## If something goes wrong
 
-- **Bad deploy:** Render → Deploys → roll back to the previous deploy. The disk
-  (data) is untouched by a rollback.
+- **Bad deploy:** Render → Deploys → roll back to the previous deploy. Data is
+  in Supabase, so a rollback changes nothing about it.
 - **Data loss/corruption:** follow
   [backup-restore.md](backup-restore.md#restore-drill-do-this-before-you-need-it),
   preferably restoring into a new service before switching the domain.

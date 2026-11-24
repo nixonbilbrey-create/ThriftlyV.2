@@ -154,13 +154,10 @@ In production the app is a stateless container: Supabase Postgres holds accounts
 and drafts, Supabase Storage holds photos, so nothing durable lives on the host
 and a redeploy or restart is free. It is still a long-running Node process, so
 it needs a container host — Render is the reference target here (starter plan,
-no disk, ≈ $7/mo). The SQLite + local-photo shape remains for local development
-and tests.
-Everything durable lives under `data/` by default (SQLite at
-`data/thriftly.db`, photos in `data/photos/`), so the Render disk
-mounts once at `/app/data` and covers both. `render.yaml` declares it;
-`Dockerfile` builds the image (multi-stage, build tools only in the
-build layer).
+no disk, ≈ $7/mo). `render.yaml` declares that shape; `Dockerfile` builds the
+image (multi-stage, build tools only in the build layer). Locally and in the
+tests, SQLite at `data/thriftly.db` and photos in `data/photos/` stand in for
+the two Supabase services.
 
 **Environment variables** (all read from `process.env`, listed in
 `.env.example`; on Render they sit in the dashboard, never in the
@@ -189,10 +186,12 @@ image):
 
 **Postgres + Supabase Storage:** set `DATABASE_URL`, `SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_STORAGE_BUCKET` and the app stops
-touching the disk — the SQLite file and photo directory are ignored, the
-nightly in-process backup says so in the log, and Supabase's own
-backups/PITR become the backup story. [docs/SUPABASE.md](docs/SUPABASE.md) is
-the cutover runbook, including the data and photo copy scripts. `/api/health`
+touching the filesystem — the SQLite file and photo directory are ignored, the
+in-process backup scheduler logs that it is skipped, and Supabase's own backups
+plus an independent export are the backup story
+([docs/backup-restore.md](docs/backup-restore.md)). [docs/SUPABASE.md](docs/SUPABASE.md)
+is the runbook for standing that up, and for moving an existing SQLite instance
+(data and photo copy scripts included). `/api/health`
 stays a pure liveness check for Render; `/api/ready` pings the database, so
 point an external uptime monitor at that one.
 
@@ -206,30 +205,32 @@ monitoring and the first post-launch week. Terms of Service live at
 1. `git init` a GitHub repo and push this code to it (Render deploys
    from git or a container registry).
 2. In Render: "New +" → Blueprint → pick the repo; the `render.yaml`
-   pre-fills the service, health check (`/api/health`) and the 1 GB
-   disk at `/app/data`.
+   pre-fills the service, the health check (`/api/health`) and the Supabase env
+   slots. There is no disk to create.
 3. Generate a fresh `ENCRYPTION_KEY` for this environment
-   (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
-   and fill in the `SMTP_*` values in Render → Environment.
+   (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`),
+   add `DATABASE_URL` (session pooler) and the three `SUPABASE_*` values from
+   [docs/SUPABASE.md](docs/SUPABASE.md), and fill in the `SMTP_*` values in
+   Render → Environment.
 4. First deploy → note the `*.onrender.com` URL → set `BASE_URL` to it
    (or your custom domain) → redeploy so email links point at the
-   right origin. Passthrough deploys won't change the disk mount.
+   right origin. The container is stateless, so a redeploy has nothing to move.
 5. Smoke-test the live deploy: `/api/health` and `/api/ready`, a full signup →
    verify email → login flow, a photo scan, and a password reset with SMTP.
 6. Add a custom domain in Render → Settings → Networking (HTTPS cert
    is managed). HTTP behind the proxy is fine — the HSTS header is the
    one to add on top.
 
-**Backups:** Render snapshots the disk daily (kept 7 days), but a disk is
-not a backup. `npm run backup` writes one checksummed archive of the
-SQLite database (online snapshot, integrity-checked) plus photos, with
-an optional upload hook (`BACKUP_UPLOAD_CMD`) for R2/S3/B2;
-`npm run restore` verifies and restores it. Setting
-`BACKUP_INTERVAL_HOURS=24` (already in `render.yaml`) runs the same backup
-nightly inside the server, because a Render cron job can't read the
-service's disk; keep `BACKUP_DIR` inside `/app/data`. See
-[docs/backup-restore.md](docs/backup-restore.md) for the Render runbook
-and the restore drill — run the drill once before you need it.
+**Backups:** nothing durable sits on the Render host, so there is no disk to
+snapshot. Supabase keeps daily backups of the database (PITR depends on the
+plan), which covers "a row was deleted" but not "the provider account is gone".
+The second layer is an independent export — `pg_dump` of `DATABASE_URL` plus a
+copy of the `photos` bucket — kept off Supabase. Both commands, the restore
+drill and the definition of done are in
+[docs/backup-restore.md](docs/backup-restore.md). `npm run backup` /
+`npm run restore` remain for the SQLite shape (local development and tests);
+under Postgres the scheduler logs that it is skipped, and `render.yaml` sets no
+`BACKUP_*` at all.
 
 ## What changed from the single-user version
 

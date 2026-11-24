@@ -114,17 +114,19 @@ The cutover commit must:
 - select the Postgres backend when `DATABASE_URL` is set (SQLite stays for
   local dev and tests);
 - make the data layer async end to end, including `requireAuth`;
-- store photos through Supabase Storage when configured (local disk otherwise),
-  keeping `/api/photos/:id` as the public URL;
+- store photos through Supabase Storage when configured (local disk otherwise,
+  for development), keeping `/api/photos/:id` as the public URL;
 - replace the SQLite backup scheduler with the Supabase backup/PITR story on
-  your plan, plus an off-provider export;
+  your plan, plus an independent export ([backup-restore.md](backup-restore.md));
 - add a CI job against a real Postgres service so the SQL is exercised on every
   push;
-- remove the Render disk and `BACKUP_*` vars from `render.yaml` once production
-  no longer writes to disk.
+- carry no Render disk and no `BACKUP_*` vars in `render.yaml` — production
+  writes nothing to the container.
 
-**Do not delete the SQLite data or Render disk until** the Postgres app has run
-cleanly for a full backup cycle.
+This shape has no Render disk. If you are moving an instance that still has
+one, keep its SQLite data and volume until the Postgres app has run cleanly for
+a full backup cycle; a fresh launch has neither to keep. Do not delete the
+Supabase project or its bucket at any point — that is the data.
 
 ## 7. Deploy on Render
 
