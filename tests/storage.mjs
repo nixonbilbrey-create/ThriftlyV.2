@@ -19,6 +19,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
+import photosModule from '../photos.js';
 
 const PORT = Number(process.env.STORAGE_TEST_PORT || 3131);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -203,6 +204,25 @@ function photoForm(bytes) {
   const form = new FormData();
   form.append('photo', new Blob([bytes], { type: 'image/jpeg' }), 'item.jpg');
   return form;
+}
+
+// ---------- the TTL guard ----------
+// A malformed STORAGE_CHECK_TTL_MS used to become NaN, and every comparison
+// against NaN is false — the cache would silently stop caching while still
+// looking configured. These are pure-function checks so the fallback is pinned
+// without needing a server round trip.
+function ttlGuardChecks(photos) {
+  const { resolveStorageCheckTtl } = photos;
+  const fallback = 10000;
+  assert.equal(resolveStorageCheckTtl(undefined), fallback, 'unset uses the default');
+  assert.equal(resolveStorageCheckTtl(''), fallback, 'blank uses the default');
+  assert.equal(resolveStorageCheckTtl('   '), fallback, 'whitespace uses the default');
+  assert.equal(resolveStorageCheckTtl('abc'), fallback, 'unparseable uses the default');
+  assert.equal(resolveStorageCheckTtl('10s'), fallback, 'a unit suffix is not silently honoured');
+  assert.equal(resolveStorageCheckTtl('NaN'), fallback, 'the literal string NaN uses the default');
+  assert.equal(resolveStorageCheckTtl('-1'), fallback, 'a negative TTL uses the default');
+  assert.equal(resolveStorageCheckTtl('250'), 250, 'a real value is honoured');
+  assert.equal(resolveStorageCheckTtl('0'), 0, '0 is allowed, as an explicit opt-out');
 }
 
 // ---------- photos.js against the fake Storage API ----------
@@ -635,6 +655,10 @@ let failed = false;
 try {
   console.log('storage backend test (fake Supabase Storage + fake Gemini)');
   let step = Date.now();
+  ttlGuardChecks(photosModule);
+  console.log(`  ok   STORAGE_CHECK_TTL_MS guard falls back on malformed values (${Date.now() - step}ms)`);
+
+  step = Date.now();
   await storageClientChecks(storage);
   console.log(`  ok   photos.js upload/read/delete/upsert/errors over HTTP (${Date.now() - step}ms)`);
 

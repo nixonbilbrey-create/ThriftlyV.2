@@ -98,7 +98,28 @@ async function checkStorageUncached() {
 // health-check flood would do it by accident. Results (failures included) are
 // reused for STORAGE_CHECK_TTL_MS, and concurrent callers share one in-flight
 // request, so a burst at expiry still costs Storage a single call.
-const STORAGE_CHECK_TTL_MS = Number(process.env.STORAGE_CHECK_TTL_MS ?? 10000);
+const DEFAULT_STORAGE_CHECK_TTL_MS = 10000;
+
+// The cache is a load limiter on a public endpoint, so a malformed value must not
+// quietly switch it off: Number('abc') is NaN, and every TTL comparison against
+// NaN is false, which would re-probe Storage on every request while looking
+// configured. Anything unparseable, blank or negative falls back to the default
+// and says so. An explicit 0 still disables caching, but loudly — that is a real
+// foot-gun under probe traffic, not a hidden one.
+function resolveStorageCheckTtl(raw) {
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_STORAGE_CHECK_TTL_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    console.warn(`[storage] STORAGE_CHECK_TTL_MS="${raw}" is not a valid duration in ms — using ${DEFAULT_STORAGE_CHECK_TTL_MS}`);
+    return DEFAULT_STORAGE_CHECK_TTL_MS;
+  }
+  if (value === 0) {
+    console.warn('[storage] STORAGE_CHECK_TTL_MS=0 disables the bucket-check cache: every /api/ready request will call Supabase Storage');
+  }
+  return value;
+}
+
+const STORAGE_CHECK_TTL_MS = resolveStorageCheckTtl(process.env.STORAGE_CHECK_TTL_MS);
 let storageCheckCache = null; // { at, result }
 let storageCheckInFlight = null;
 
@@ -224,5 +245,5 @@ async function deletePhoto(photoId) {
 
 module.exports = {
   shrink, savePhoto, putPhoto, readPhoto, deletePhoto,
-  isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, PHOTOS_DIR,
+  isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, resolveStorageCheckTtl, PHOTOS_DIR,
 };
