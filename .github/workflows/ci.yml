@@ -106,8 +106,17 @@ jobs:
           # Boot proves the bucket answers (checkStorage), so stand up the one
           # route it calls. A wrong bucket has to fail here, not on a user's
           # first scan.
-          node -e 'require("http").createServer((req,res)=>{const ok=/^\/storage\/v1\/bucket\/photos$/.test(req.url);res.writeHead(ok?200:404);res.end(ok?"{\"id\":\"photos\"}":"{\"error\":\"not found\"}");}).listen(9191,"127.0.0.1")' &
-          sleep 1
+          node -e 'require("http").createServer((req,res)=>{const ok=/^\/storage\/v1\/bucket\/photos$/.test(req.url);res.writeHead(ok?200:404);res.end(ok?"{\"id\":\"photos\"}":"{\"error\":\"not found\"}");}).listen(9191,"0.0.0.0")' > storage-stub.log 2>&1 &
+          # Prove the stub answers before blaming the image for not reaching it:
+          # a fixed sleep made a slow runner look like a broken app.
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:9191/storage/v1/bucket/photos > /dev/null; then
+              echo "storage stub answering after ${i}"
+              break
+            fi
+            if [ "$i" = "40" ]; then echo "storage stub never answered:"; cat storage-stub.log; exit 1; fi
+            sleep 0.5
+          done
           docker run -d --name thriftly-pg --network host \
             -e ENCRYPTION_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
             -e DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/postgres' \
@@ -125,6 +134,8 @@ jobs:
           done
           echo "never became ready on Postgres — container logs:"
           docker logs thriftly-pg
+          echo "— storage stub log:"
+          cat storage-stub.log
           exit 1
 
       # /api/ready only proves the ping. This proves the image writes through
@@ -176,4 +187,4 @@ jobs:
         run: |
           docker rm -f thriftly-ci || true
           docker rm -f thriftly-pg || true
-          rm -f ready.json signup.json login.json bad-bucket.log
+          rm -f ready.json signup.json login.json bad-bucket.log storage-stub.log
