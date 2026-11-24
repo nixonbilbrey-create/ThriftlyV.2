@@ -139,7 +139,10 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   first (`photos.js` → `shrink()`): longest edge capped at 1400 px, re-encoded
   as JPEG q82, EXIF orientation auto-applied — and that single normalized
   image is both what Gemini sees and what's stored; the original is never
-  kept. They're served without auth over unguessable 128-bit random ids,
+  kept. iPhone HEIC photos are re-encoded to JPEG in the browser before upload,
+  because this image pipeline (`sharp`'s prebuilt libvips) has no HEVC decoder; a
+  HEIC that reaches the API anyway is refused with instructions, not a vague error.
+  They're served without auth over unguessable 128-bit random ids,
   since `<img>` tags can't send Bearer headers; swap in signed URLs if draft
   images ever become sensitive. Object ids survive either backend, so the
   same draft URLs keep working across the move to Supabase. Setting
@@ -168,7 +171,7 @@ image):
 | `BASE_URL` | after first deploy | Public origin used to build verification/reset email links |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | for real email | SMTP relay (e.g. `smtp-relay.brevo.com`, 587, `false` for STARTTLS). Absent → dev mode prints links and returns them in API responses — do not ship that way |
 | `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |
-| `GEMINI_MODEL` | optional | Model override (default `gemini-3.5-flash`) |
+| `GEMINI_MODEL` | optional | Model override (default `gemini-3.8-flash`). If Google retires it, `GEMINI_MODEL_FALLBACKS` are tried in order and the winner is reused |
 | `GEMINI_API_BASE` | tests only | Points the client at a local fake. Ignored in production, where the server refuses to start if it is set — keys only go to Google |
 | `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
 | `TURNSTILE_SITE_KEY` | optional | Cloudflare Turnstile site key — renders the signup CAPTCHA widget |

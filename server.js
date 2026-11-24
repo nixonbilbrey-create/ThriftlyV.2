@@ -27,7 +27,7 @@ const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
-const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage } = require('./photos');
+const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage, looksLikeHeic } = require('./photos');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
@@ -464,10 +464,23 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
     const apiKey = usersGeminiKey(req.user);
     if (!apiKey) return res.status(400).json({ error: 'Connect your Gemini API key in Settings before scanning' });
     if (!req.file) return res.status(400).json({ error: 'No photo uploaded — send multipart/form-data with field name "photo"' });
+    // iPhone photos are HEIC by default, and this build's sharp cannot decode
+    // HEVC — so say what to do, rather than "unsupported image type". The browser
+    // re-encodes HEIC to JPEG before upload when it can, which is why this is the
+    // fallback path and not the normal one.
+    const heicMessage =
+      'That looks like an iPhone HEIC photo, which Thriftly can\'t read directly. ' +
+      'On the iPhone: Settings → Camera → Formats → Most Compatible, then retake it — ' +
+      'or open Photos, share/export the photo as JPEG and upload that.';
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     if (!allowed.includes(req.file.mimetype)) {
-      return res.status(400).json({ error: `Unsupported image type: ${req.file.mimetype}. Use jpeg, png, gif, or webp.` });
+      const isHeicType = /image\/hei[cf]/i.test(req.file.mimetype);
+      return res.status(isHeicType ? 415 : 400).json({
+        error: isHeicType ? heicMessage : `Unsupported image type: ${req.file.mimetype}. Use jpeg, png, gif, or webp.`,
+      });
     }
+    // A client that mislabels a HEIC as image/jpeg still gets the useful message.
+    if (looksLikeHeic(req.file.buffer)) return res.status(415).json({ error: heicMessage });
 
     // One resize pass serves both consumers: the (smaller) same image goes to
     // Gemini and to disk. The upload never survives in full size.

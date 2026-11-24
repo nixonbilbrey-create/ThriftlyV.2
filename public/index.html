@@ -164,7 +164,7 @@
 
     <main>
       <div>
-        <input type="file" accept="image/*" id="fileInput">
+        <input type="file" accept="image/*" capture="environment" id="fileInput">
         <img id="preview" alt="">
         <button id="scanBtn" disabled>Scan photo</button>
         <div id="analysisBox" style="margin-top:14px;"></div>
@@ -579,13 +579,41 @@
       document.getElementById('scanBtn').disabled = false;
     });
 
+    // iPhone photos arrive as HEIC, which the server's sharp build cannot decode
+    // (libvips there has no HEVC support — only AVIF). Safari and iOS can decode
+    // them, so re-encode to JPEG here. A browser that can't gets a plain
+    // instruction instead of a scan that fails with an opaque error.
+    async function normalizePhoto(f) {
+      const isHeic = /^image\/hei[cf]/i.test(f.type) || /\.(heic|heif)$/i.test(f.name);
+      if (!isHeic) return f;
+      try {
+        const bitmap = await createImageBitmap(f);
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width; canvas.height = bitmap.height;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        const blob = await new Promise((resolve, reject) =>
+          canvas.toBlob(b => (b ? resolve(b) : reject(new Error('could not re-encode'))), 'image/jpeg', 0.92));
+        return new File([blob], String(f.name || 'photo').replace(/\.(heic|heif)$/i, '') + '.jpg', { type: 'image/jpeg' });
+      } catch {
+        throw new Error('This browser can’t convert that iPhone HEIC photo. On the iPhone, use Settings → Camera → Formats → Most Compatible, or export the photo as JPEG and upload that.');
+      }
+    }
+
     document.getElementById('scanBtn').addEventListener('click', async () => {
       const btn = document.getElementById('scanBtn');
       btn.disabled = true; btn.textContent = 'Scanning…';
       const analysisBox = document.getElementById('analysisBox');
       analysisBox.innerHTML = skeletonAnalysis();
+      let upload;
+      try {
+        upload = await normalizePhoto(file);
+      } catch (err) {
+        analysisBox.innerHTML = '<pre>' + esc(err.message) + '</pre>';
+        btn.disabled = false; btn.textContent = 'Scan photo';
+        return;
+      }
       const fd = new FormData();
-      fd.append('photo', file);
+      fd.append('photo', upload);
       try {
         const res = await api('/api/scan', { method: 'POST', body: fd });
         const data = await res.json();

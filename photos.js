@@ -192,6 +192,19 @@ async function savePhoto(buffer, mimetype) {
   return { photoId, url: `/api/photos/${photoId}` };
 }
 
+// HEIC is what iPhones shoot by default. This sharp build has libheif for AVIF
+// only — hevc decoding is absent (verified: heifsave reports "Unsupported
+// compression: hevc"), so a HEIC buffer cannot be processed here at all. Sniffing
+// the ISOBMFF brand lets the app say that plainly instead of surfacing a generic
+// "couldn't read that image".
+const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
+function looksLikeHeic(buffer) {
+  if (!buffer || buffer.length < 12) return false;
+  if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+  const brand = buffer.toString('ascii', 8, 12).toLowerCase();
+  return brand !== 'avif' && HEIF_BRANDS.has(brand);
+}
+
 function isValidPhotoId(photoId) {
   return typeof photoId === 'string' && PHOTO_ID_RE.test(photoId);
 }
@@ -245,5 +258,6 @@ async function deletePhoto(photoId) {
 
 module.exports = {
   shrink, savePhoto, putPhoto, readPhoto, deletePhoto,
-  isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, resolveStorageCheckTtl, PHOTOS_DIR,
+  isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, resolveStorageCheckTtl,
+  looksLikeHeic, PHOTOS_DIR,
 };

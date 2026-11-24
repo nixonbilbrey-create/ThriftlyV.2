@@ -27,6 +27,9 @@ const TEST_DIR = 'data-test/storage';
 const DB_PATH = `${TEST_DIR}/storage.db`;
 const BUCKET = 'photos-test';
 const STORAGE_CHECK_TTL_MS = 200;
+// A model ID Google has retired: the fake answers 404 the way the real API does,
+// which is the signal gemini.js falls back on.
+const RETIRED_MODELS = new Set(['gemini-3.5-flash']);
 const SERVICE_KEY = 'test-service-role-key';
 
 const plainHeaders = { 'content-type': 'application/json' };
@@ -179,7 +182,15 @@ function startFakeGemini() {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ models: [{ name: 'models/test-model' }] }));
       }
-      if (req.method === 'POST' && /\/v1beta\/models\/[^/]+:generateContent$/.test(req.url)) {
+      const generate = /^\/v1beta\/models\/([^/:]+):generateContent$/.exec(req.url);
+      if (req.method === 'POST' && generate) {
+        const model = generate[1];
+        if (RETIRED_MODELS.has(model)) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({
+            error: { code: 404, message: `models/${model} is not found for API version v1beta, or is not supported for generateContent.` },
+          }));
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({
           candidates: [{ content: { parts: [{ text: JSON.stringify(analysis) }] } }],
@@ -303,7 +314,9 @@ function startApp(storage, gemini) {
       // Short TTL so the cache expiring is observable inside a test run.
       STORAGE_CHECK_TTL_MS: String(STORAGE_CHECK_TTL_MS),
       GEMINI_API_BASE: `${gemini.url}/v1beta`,
-      GEMINI_MODEL: 'test-model',
+      // Deliberately a retired ID: every scan in this suite then has to fall back.
+      GEMINI_MODEL: 'gemini-3.5-flash',
+      GEMINI_MODEL_FALLBACKS: 'gemini-3.6-flash,gemini-flash-latest',
       SMTP_HOST: '',
       TURNSTILE_SITE_KEY: '',
       TURNSTILE_SECRET: '',
@@ -386,8 +399,12 @@ async function apiFlows(storage, gemini) {
     `the stored image is capped at 1400px (got ${storedMeta.width}x${storedMeta.height})`,
   );
   assert.ok(
-    gemini.requests.some((r) => r.path === '/v1beta/models/test-model:generateContent' && r.key === 'fake-gemini-key-abc123'),
-    'the scan calls the configured model with the user key',
+    gemini.requests.some((r) => r.path === '/v1beta/models/gemini-3.5-flash:generateContent' && r.key === 'fake-gemini-key-abc123'),
+    'the scan tries the configured model first, with the user key',
+  );
+  assert.ok(
+    gemini.requests.some((r) => r.path === '/v1beta/models/gemini-3.6-flash:generateContent' && r.key === 'fake-gemini-key-abc123'),
+    'a retired model id falls back to the next candidate instead of failing the scan',
   );
 
   // ---- serving reads back from Storage ----
@@ -475,6 +492,40 @@ async function readinessProvesBucket(storage) {
 
   await settle();
   assert.equal((await fetch(`${BASE}/api/ready`)).status, 200, 'readiness recovers when Storage does');
+}
+
+// ---------- HEIC, which iPhones shoot by default ----------
+// This sharp build cannot decode HEVC (verified: heifsave reports "Unsupported
+// compression: hevc"), so a HEIC that reaches the server must be refused with
+// instructions — and a HEIC mislabelled as JPEG must be caught by its signature
+// rather than slipping through to a vague "couldn't read that image".
+function heicBuffer() {
+  return Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x18]),
+    Buffer.from('ftypheic', 'ascii'),
+    Buffer.from([0x00, 0x00, 0x00, 0x00]),
+    Buffer.from('heicmif1', 'ascii'),
+  ]);
+}
+
+async function heicRejectionFlow(token) {
+  const draftCount = async () => (await json(await fetch(`${BASE}/api/drafts`, { headers: { authorization: `Bearer ${token}` } }))).length;
+  const before = await draftCount();
+
+  const typed = new FormData();
+  typed.append('photo', new Blob([heicBuffer()], { type: 'image/heic' }), 'IMG_0001.HEIC');
+  const res = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: typed });
+  assert.equal(res.status, 415, 'a HEIC upload is refused as unsupported media');
+  const body = await json(res);
+  assert.match(body.error || '', /HEIC/i, 'the error names HEIC');
+  assert.match(body.error || '', /Most Compatible|JPEG/i, 'and tells the user what to do instead');
+
+  const mislabelled = new FormData();
+  mislabelled.append('photo', new Blob([heicBuffer()], { type: 'image/jpeg' }), 'IMG_0002.jpg');
+  const sniffed = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: mislabelled });
+  assert.equal(sniffed.status, 415, 'a HEIC labelled as JPEG is still refused');
+
+  assert.equal(await draftCount(), before, 'a refused upload leaves no draft behind');
 }
 
 // ---------- the orphan-cleanup path ----------
@@ -667,6 +718,10 @@ try {
   await waitForServer(child);
   const { token, jpeg } = await apiFlows(storage, gemini);
   console.log(`  ok   scan → upload → serve → export → draft delete (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await heicRejectionFlow(token);
+  console.log(`  ok   HEIC refused with instructions, mislabelled ones sniffed too (${Date.now() - step}ms)`);
 
   step = Date.now();
   await readinessProvesBucket(storage);

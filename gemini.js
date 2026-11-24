@@ -1,5 +1,15 @@
 const PLATFORMS = ['Vinted', 'Depop', 'Poshmark', 'eBay'];
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+// Model IDs get retired — gemini-3.5-flash went in October 2026 and is now only
+// routed by Google. A pinned name that stops existing would break every scan at
+// once, so the configured model is tried first and these are tried in order when
+// the API says it is gone. Whichever answers is reused for the rest of the
+// process, so the fallback costs one extra request, not one per scan.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const MODEL_FALLBACKS = (process.env.GEMINI_MODEL_FALLBACKS || 'gemini-3.6-flash,gemini-flash-latest')
+  .split(',')
+  .map((name) => name.trim())
+  .filter(Boolean);
+let activeModel = null;
 const DEFAULT_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 // GEMINI_API_BASE lets the tests point this client at a local fake instead of
 // spending a real key. In production it is ignored outright: honoring it would
@@ -24,32 +34,21 @@ async function testGeminiKey(apiKey) {
   return true;
 }
 
-// Calls generateContent with the given user's key, forcing JSON output, and parses it.
-async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800 }) {
-  if (!apiKey) {
-    const err = new Error('No Gemini API key connected — add one in Settings first');
-    err.status = 400;
-    throw err;
-  }
+function modelCandidates() {
+  return [...new Set([activeModel, MODEL, ...MODEL_FALLBACKS].filter(Boolean))];
+}
 
-  const res = await fetch(`${API_BASE}/models/${MODEL}:generateContent`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ parts }],
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
-    }),
-  });
+// 404, or a 400 whose message is about the model rather than the request (a key
+// that can't see the model, a retired ID, a name that never existed). Anything
+// else is a real error and must not be masked by retrying another model.
+function isModelUnavailable(status, data) {
+  if (status === 404) return true;
+  if (status !== 400) return false;
+  const message = String(data?.error?.message || '');
+  return /model/i.test(message) && /(not found|not supported|does not exist|deprecated|no longer|is not available)/i.test(message);
+}
 
-  const data = await res.json();
-  if (!res.ok) {
-    const err = new Error('Gemini API error');
-    err.status = res.status;
-    err.detail = data;
-    throw err;
-  }
-
+function parseModelJSON(data) {
   const textParts = data.candidates?.[0]?.content?.parts?.filter(p => p.text) || [];
   if (!textParts.length) {
     const err = new Error('No text content in model response');
@@ -68,6 +67,49 @@ async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800 }) {
     err.raw = raw;
     throw err;
   }
+}
+
+// Calls generateContent with the given user's key, forcing JSON output, and parses it.
+async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800 }) {
+  if (!apiKey) {
+    const err = new Error('No Gemini API key connected — add one in Settings first');
+    err.status = 400;
+    throw err;
+  }
+
+  let lastError = null;
+  for (const model of modelCandidates()) {
+    const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ parts }],
+        generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      activeModel = model;
+      return parseModelJSON(data);
+    }
+
+    const err = new Error('Gemini API error');
+    err.status = res.status;
+    err.detail = data;
+    err.model = model;
+    if (!isModelUnavailable(res.status, data)) throw err;
+    lastError = err;
+  }
+
+  const err = new Error(
+    `Gemini model "${MODEL}" is not available to this key, and none of the fallbacks worked ` +
+    `(${MODEL_FALLBACKS.join(', ')}). Set GEMINI_MODEL to a model this key can use.`,
+  );
+  err.status = lastError ? lastError.status : 502;
+  err.detail = lastError && lastError.detail;
+  throw err;
 }
 
 // ---------- prompts ----------
@@ -130,6 +172,6 @@ function listingParts(analysis) {
 }
 
 module.exports = {
-  PLATFORMS, MODEL, API_BASE, testGeminiKey, callGeminiJSON,
+  PLATFORMS, MODEL, MODEL_FALLBACKS, API_BASE, testGeminiKey, callGeminiJSON, modelCandidates,
   ANALYZE_SYSTEM_PROMPT, LISTING_SYSTEM_PROMPT, analyzeParts, listingParts,
 };
