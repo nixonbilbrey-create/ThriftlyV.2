@@ -31,6 +31,12 @@ services:
         sync: false
       - key: SMTP_FROM
         sync: false # your verified sender address
+      # TEMPORARY: there is no mail relay yet, so signup signs people in straight
+      # away and nobody proves they own their address. Set this back to "true" (or
+      # delete the entry) the moment SMTP works — it is what keeps throwaway and
+      # misspelled addresses out, and what makes password reset reach a real inbox.
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: "false"
       - key: GEMINI_MODEL
         sync: false # optional override; defaults in gemini.js
       - key: TURNSTILE_SITE_KEY

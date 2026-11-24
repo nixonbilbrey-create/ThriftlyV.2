@@ -17,7 +17,7 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 | 4 | **Supabase:** copy the session-pooler URI, project URL and `service_role` key; generate a fresh `ENCRYPTION_KEY` | you | Four values in hand, typed into Render only — never into chat |
 | 5 | **Render:** New + → Blueprint → pick the repo → fill the prompted variables | you | Service created; no disk under Settings; first deploy green |
 | 6 | Set `BASE_URL` to the service origin and let it redeploy | you | Verification and reset links point at the real host |
-| 7 | SMTP relay configured and the sender domain authenticated (SPF + DKIM) | you | A real signup receives the email; Gmail and Outlook land in the inbox |
+| 7 | SMTP relay configured and the sender domain authenticated (SPF + DKIM) | you | A real signup receives the email; Gmail and Outlook land in the inbox. While `REQUIRE_EMAIL_VERIFICATION=false` this can slip — but accounts are then unverified, and password reset only works through the dev fallback, so treat it as temporary |
 | 8 | Turnstile site + secret keys set | you | Signup on the live origin shows the challenge and rejects a missing token |
 | 9 | **Prove the backend:** `/api/ready` on the live origin | you | `{"ok":true,"db":"pg","storage":"ok"}` — `db:"sqlite"` means `DATABASE_URL` never arrived |
 | 10 | **Prove writes:** signup row, then a scanned photo | you | Row in Supabase `users`; object in the `photos` bucket; `/api/photos/<id>` serves it; deleting the draft removes it |
@@ -33,8 +33,10 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 
 - CI (`.github/workflows/ci.yml`): full smoke suite on every push, plus a
   Docker build that actually boots the image and polls `/api/health`.
-- Hard email gate: no session token exists before the emailed link is clicked,
-  so unverified accounts can't use the app.
+- Hard email gate by default: no session token exists before the emailed link is
+  clicked, so unverified accounts can't use the app. An instance with no mail relay
+  can switch it off with `REQUIRE_EMAIL_VERIFICATION=false` (signup then returns a
+  session), which this deployment currently does until SMTP exists.
 - Privacy consent recorded per account, with re-consent when the policy version
   changes; `/api/config` reports the current version.
 - Turnstile CAPTCHA (fail-closed when configured), login/signup/scan/resend

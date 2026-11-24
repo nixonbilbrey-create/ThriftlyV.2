@@ -41,10 +41,22 @@ const {
 
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
 
-// Must match the version shown/dated in public/privacy.html. Bump BOTH when the
-// policy changes — every signup records it, and /api/auth/me reports it back.
-// Must match the version rendered in public/privacy.html: the smoke test fails
-// if the served page and this constant disagree.
+// Email verification proves the address belongs to whoever signed up, which is a
+// real protection — but it needs working SMTP. An operator without a mail relay can
+// turn it off explicitly (REQUIRE_EMAIL_VERIFICATION=false); accounts are then
+// usable immediately. Only an explicit false disables it: a typo or a missing var
+// must leave the gate on.
+const REQUIRE_EMAIL_VERIFICATION = !['0', 'false', 'no', 'off'].includes(
+  String(process.env.REQUIRE_EMAIL_VERIFICATION ?? 'true').trim().toLowerCase()
+);
+
+if (!REQUIRE_EMAIL_VERIFICATION) {
+  console.warn('[startup] REQUIRE_EMAIL_VERIFICATION=false — signup issues a session immediately, so nobody has to prove they own their email address');
+}
+
+// Must match the version rendered in public/privacy.html: the smoke test fails if
+// the served page and this constant disagree. Bump both together — every signup
+// records it and /api/auth/me reports it back.
 const PRIVACY_VERSION = '2026-11-24b';
 
 const app = express();
@@ -257,6 +269,19 @@ app.post('/api/auth/signup', authLimiter, async (req, res) => {
     consentVersion: PRIVACY_VERSION, consentAt: Date.now(),
   });
 
+  // Verification off: the account is usable now, so hand back a session exactly as
+  // login would. No email is sent, because there is nothing to verify.
+  if (!REQUIRE_EMAIL_VERIFICATION) {
+    await markUserVerified(db, user.id);
+    const token = newToken();
+    await createSession(db, { token, userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
+    return res.status(201).json({
+      message: 'Account created — you are signed in.',
+      token,
+      user: publicUser(await getUserById(db, user.id)),
+    });
+  }
+
   const token = newToken();
   await createEmailVerification(db, { token, userId: user.id, expiresAt: Date.now() + EMAIL_VERIFICATION_TTL_MS });
   const verifyUrl = `${BASE_URL}/api/auth/verify-email?token=${token}`;
@@ -297,6 +322,9 @@ function resendRetryAfterSeconds(email) {
 }
 
 app.post('/api/auth/resend-verification', authLimiter, async (req, res) => {
+  if (!REQUIRE_EMAIL_VERIFICATION) {
+    return res.status(400).json({ error: 'Email verification is switched off on this instance — just log in.' });
+  }
   const { email } = req.body || {};
   const key = String(email || '').trim().toLowerCase();
   const retryAfter = key ? resendRetryAfterSeconds(key) : 0;
@@ -368,7 +396,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   if (!passwordOk) {
     return res.status(401).json({ error: 'Incorrect email or password' });
   }
-  if (!user.email_verified) {
+  if (REQUIRE_EMAIL_VERIFICATION && !user.email_verified) {
     return res.status(403).json({ error: 'Please verify your email before logging in', needsVerification: true });
   }
   const token = newToken();

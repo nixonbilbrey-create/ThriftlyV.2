@@ -621,6 +621,85 @@ function encryptionKeyGuardFlow() {
   assert.match(roundtrip.stdout, /roundtrip-ok/, 'a real 64-hex key still encrypts and decrypts');
 }
 
+// A booted instance on its own port and database, for tests that need different
+// environment than the main server.
+async function bootInstance(port, dbName, extraEnv = {}) {
+  const base = `http://127.0.0.1:${port}`;
+  const child = spawn('node', ['server.js'], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DB_PATH: `${TEST_DIR}/${dbName}`,
+      PHOTOS_DIR: `${TEST_DIR}/photos`,
+      BASE_URL: base,
+      ...extraEnv,
+    },
+    stdio: 'ignore',
+  });
+  const end = Date.now() + 10000;
+  let up = false;
+  while (Date.now() < end && !up) {
+    try { up = (await fetch(`${base}/api/health`)).ok; } catch { /* still starting */ }
+    if (!up) await sleep(100);
+  }
+  assert.ok(up, `instance on ${port} must boot`);
+  return { child, base };
+}
+
+// REQUIRE_EMAIL_VERIFICATION=false exists for instances with no mail relay. It must
+// mean a session at signup — not a 201 followed by a login that refuses — and it
+// must stay opt-in, so the same flow is run against a default instance and gated.
+async function verificationOptOutFlow() {
+  const off = await bootInstance(3132, 'noverify.db', { REQUIRE_EMAIL_VERIFICATION: 'false' });
+  const on = await bootInstance(3133, 'verify-on.db');
+  try {
+    const email = 'noverify@test.dev';
+    const signup = await fetch(`${off.base}/api/auth/signup`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email, password: 'noverify-pass-1', agree: true }),
+    });
+    assert.equal(signup.status, 201, 'signup succeeds on the no-verification instance');
+    const created = await json(signup);
+    assert.match(created.token || '', /^[a-f0-9]{64}$/, 'signup hands back a session instead of an inbox errand');
+    assert.equal(created.user.emailVerified, true, 'and the account is not left half-created');
+    assert.equal(created.devVerifyLink, undefined, 'no useless verification link is produced');
+
+    const me = await json(await fetch(`${off.base}/api/auth/me`, { headers: authHeaders(created.token) }));
+    assert.equal(me.email, email, 'the session works immediately');
+    const drafts = await json(await fetch(`${off.base}/api/drafts`, { headers: authHeaders(created.token) }));
+    assert.ok(Array.isArray(drafts), 'and the app behind it is open, not just the auth endpoints');
+
+    const login = await fetch(`${off.base}/api/auth/login`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email, password: 'noverify-pass-1' }),
+    });
+    assert.equal(login.status, 200, 'later logins need no verification step either');
+
+    const resend = await fetch(`${off.base}/api/auth/resend-verification`, {
+      method: 'POST', headers: plainHeaders, body: JSON.stringify({ email }),
+    });
+    assert.equal(resend.status, 400, 'resend says verification is off rather than pretending to send');
+
+    // The flag is opt-in: a default instance must still withhold the session.
+    const gatedEmail = 'still-gated@test.dev';
+    const created2 = await json(await fetch(`${on.base}/api/auth/signup`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email: gatedEmail, password: 'still-gated-1', agree: true }),
+    }));
+    assert.equal(created2.token, undefined, 'without the flag, signup still withholds the session');
+    const refused = await fetch(`${on.base}/api/auth/login`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email: gatedEmail, password: 'still-gated-1' }),
+    });
+    assert.equal(refused.status, 403, 'and login still refuses an unverified account');
+    assert.equal((await json(refused)).needsVerification, true, 'telling the UI to offer a resend');
+  } finally {
+    off.child.kill('SIGTERM');
+    on.child.kill('SIGTERM');
+    await sleep(300);
+  }
+}
+
 async function limiterChecks() {
   // Runs last: the authLimiter (shared by signup/resend/request-reset,
   // 10/hour/IP) is deliberately exhausted here so nothing earlier is affected.
@@ -678,6 +757,9 @@ try {
   const tKey = Date.now();
   encryptionKeyGuardFlow();
   console.log(`  ok   ENCRYPTION_KEY must be hex, not just 64 characters (${Date.now() - tKey}ms)`);
+  const tNoVerify = Date.now();
+  await verificationOptOutFlow();
+  console.log(`  ok   REQUIRE_EMAIL_VERIFICATION=false signs up without email, default still gates (${Date.now() - tNoVerify}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);

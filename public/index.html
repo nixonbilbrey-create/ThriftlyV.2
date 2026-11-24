@@ -306,6 +306,15 @@
           return;
         }
         if (signupMode) {
+          // Verification off on this instance: the response already carries a
+          // session, so go straight in rather than telling them to check an inbox.
+          if (data.token) {
+            token = data.token;
+            localStorage.setItem('thriftly_token', token);
+            me = data.user;
+            enterApp();
+            return;
+          }
           msgBox.textContent = data.message;
           showDevLink(data.devVerifyLink);
           return; // stay here — they need to verify before they can log in

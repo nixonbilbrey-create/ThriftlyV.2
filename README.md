@@ -171,6 +171,7 @@ image):
 | `BASE_URL` | after first deploy | Public origin used to build verification/reset email links |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | for real email | SMTP relay (e.g. `smtp-relay.brevo.com`, 587, `false` for STARTTLS). Absent → dev mode prints links and returns them in API responses — do not ship that way |
 | `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |
+| `REQUIRE_EMAIL_VERIFICATION` | optional | `false` lets people sign up without proving they own their address — for instances with no SMTP. **On by default**; only an explicit `false` disables the gate, and it weakens signup abuse protection |
 | `GEMINI_MODEL` | optional | Model override (default `gemini-3.8-flash`). If Google retires it, `GEMINI_MODEL_FALLBACKS` are tried in order and the winner is reused |
 | `GEMINI_API_BASE` | tests only | Points the client at a local fake. Ignored in production, where the server refuses to start if it is set — keys only go to Google |
 | `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
