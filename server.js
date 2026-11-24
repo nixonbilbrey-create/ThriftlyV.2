@@ -27,7 +27,7 @@ const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
-const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled } = require('./photos');
+const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage } = require('./photos');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
@@ -581,11 +581,18 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, version: APP_VERSION,
 app.get('/api/ready', async (_req, res) => {
   try {
     await ping(db);
-    res.json({ ok: true, db: db.kind });
   } catch (err) {
     console.error('[ready] database ping failed:', err && err.message);
-    res.status(503).json({ ok: false, db: db.kind });
+    return res.status(503).json({ ok: false, db: db.kind });
   }
+  // Storage credentials existing is not the same as the bucket answering: a
+  // renamed bucket or a revoked key only shows up on the first scan otherwise.
+  const storage = await checkStorage();
+  if (storage.configured && !storage.ok) {
+    console.error(`[ready] Supabase Storage unusable — ${storage.reason}`);
+    return res.status(503).json({ ok: false, db: db.kind, storage: 'unreachable', detail: storage.reason });
+  }
+  res.json({ ok: true, db: db.kind, storage: storage.configured ? 'ok' : 'not-configured' });
 });
 
 // Async route/middleware failures reach one place; sendError keeps 5xx details
@@ -623,7 +630,23 @@ if (BACKUP_INTERVAL_HOURS > 0 && db.kind !== 'pg') {
 }
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Thriftly backend (multi-user, Gemini-powered) at http://localhost:${PORT}`));
+
+// A production process whose bucket doesn't answer would boot happily and then
+// fail every scan, so prove the bucket before accepting traffic. In development
+// a failure is only a warning, because the tests deliberately run against fakes.
+(async () => {
+  if (db.kind === 'pg' && storageEnabled()) {
+    const storage = await checkStorage();
+    if (storage.ok) {
+      console.log(`[startup] Supabase Storage bucket "${storage.bucket}" reachable`);
+    } else {
+      console.error(`[startup] Supabase Storage is configured but unusable — ${storage.reason}`);
+      console.error(`[startup] check SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and that a private bucket named "${storage.bucket}" exists (docs/SUPABASE.md step 4).`);
+      if (process.env.NODE_ENV === 'production') process.exit(1);
+    }
+  }
+  app.listen(PORT, () => console.log(`Thriftly backend (multi-user, Gemini-powered) at http://localhost:${PORT}`));
+})();
 
 async function shutdown(signal) {
   console.log(`[shutdown] ${signal} — closing database`);

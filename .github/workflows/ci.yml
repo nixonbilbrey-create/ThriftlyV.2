@@ -103,17 +103,22 @@ jobs:
       - name: Boot image against Postgres
         run: |
           set -euo pipefail
+          # Boot proves the bucket answers (checkStorage), so stand up the one
+          # route it calls. A wrong bucket has to fail here, not on a user's
+          # first scan.
+          node -e 'require("http").createServer((req,res)=>{const ok=/^\/storage\/v1\/bucket\/photos$/.test(req.url);res.writeHead(ok?200:404);res.end(ok?"{\"id\":\"photos\"}":"{\"error\":\"not found\"}");}).listen(9191,"127.0.0.1")' &
+          sleep 1
           docker run -d --name thriftly-pg --network host \
             -e ENCRYPTION_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
             -e DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/postgres' \
-            -e SUPABASE_URL='http://127.0.0.1:9' \
+            -e SUPABASE_URL='http://127.0.0.1:9191' \
             -e SUPABASE_SERVICE_ROLE_KEY='ci-not-a-real-key' \
             -e BASE_URL='http://127.0.0.1:10000' \
             thriftly:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:10000/api/ready > ready.json; then
               echo "ready after ${i}s: $(cat ready.json)"
-              jq -e '.db == "pg"' ready.json
+              jq -e '.db == "pg" and .storage == "ok"' ready.json
               exit 0
             fi
             sleep 1
@@ -147,9 +152,28 @@ jobs:
           test "$(dbq 'select count(*) from sessions')" = "1"
           echo 'image + Postgres: signup, verify, login, rows confirmed'
 
+      # The other half of the promise: a bucket that doesn't answer has to stop
+      # the boot, not just show up as a warning nobody reads.
+      - name: A wrong bucket must refuse to boot
+        run: |
+          set -euo pipefail
+          set +e
+          docker run --rm --name thriftly-bad-bucket --network host \
+            -e ENCRYPTION_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+            -e DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/postgres' \
+            -e SUPABASE_URL='http://127.0.0.1:9191' \
+            -e SUPABASE_SERVICE_ROLE_KEY='ci-not-a-real-key' \
+            -e SUPABASE_STORAGE_BUCKET='not-the-bucket' \
+            thriftly:ci > bad-bucket.log 2>&1
+          code=$?
+          set -e
+          cat bad-bucket.log
+          test "$code" -ne 0
+          grep -q 'Supabase Storage is configured but unusable' bad-bucket.log
+
       - name: Clean up
         if: always()
         run: |
           docker rm -f thriftly-ci || true
           docker rm -f thriftly-pg || true
-          rm -f ready.json signup.json login.json
+          rm -f ready.json signup.json login.json bad-bucket.log

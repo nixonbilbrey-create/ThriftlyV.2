@@ -73,6 +73,27 @@ function startFakeStorage() {
         return res.end();
       }
 
+      // GET /storage/v1/bucket/<name> — what checkStorage() calls to prove the
+      // bucket exists and the key is accepted, as the real service does.
+      const bucketMatch = /^\/storage\/v1\/bucket\/([^/]+)$/.exec(url.pathname);
+      if (bucketMatch) {
+        if (auth !== `Bearer ${SERVICE_KEY}`) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'InvalidJWT' }));
+        }
+        if (failing) {
+          res.writeHead(500, { 'content-type': 'text/plain' });
+          return res.end('storage is down');
+        }
+        const wanted = decodeURIComponent(bucketMatch[1]);
+        if (wanted !== BUCKET) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Bucket not found', statusCode: '404' }));
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ id: BUCKET, name: BUCKET, public: false }));
+      }
+
       const match = /^\/storage\/v1\/object\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       if (!match) {
         res.writeHead(404, { 'content-type': 'application/json' });
@@ -380,6 +401,30 @@ async function apiFlows(storage, gemini) {
   return { token, jpeg };
 }
 
+// ---------- readiness proves the bucket, not just the env vars ----------
+// Credentials existing is not the same as the bucket answering. Readiness has to
+// report 'ok' while Storage responds and 503 when it stops, driven here through
+// the fake's control plane so a dead bucket can't pass as healthy.
+async function readinessProvesBucket(storage) {
+  const healthy = await json(await fetch(`${BASE}/api/ready`));
+  assert.equal(healthy.ok, true, 'readiness ok while Storage answers');
+  assert.equal(healthy.storage, 'ok', 'readiness reports the bucket as ok');
+  assert.equal(healthy.db, 'sqlite', 'the payload still names the database backend');
+
+  await fetch(`${storage.url}/__control/fail`, { method: 'POST', body: 'yes' });
+  try {
+    const down = await fetch(`${BASE}/api/ready`);
+    assert.equal(down.status, 503, 'an unreachable bucket must fail readiness');
+    const body = await json(down);
+    assert.equal(body.storage, 'unreachable', 'readiness names Storage as the broken dependency');
+    assert.match(body.detail || '', /bucket/, 'the detail names the bucket check');
+  } finally {
+    await fetch(`${storage.url}/__control/fail`, { method: 'POST', body: 'none' });
+  }
+
+  assert.equal((await fetch(`${BASE}/api/ready`)).status, 200, 'readiness recovers when Storage does');
+}
+
 // ---------- the orphan-cleanup path ----------
 // Block the drafts insert at the database, then scan again: the photo is
 // uploaded first, so only the cleanup in server.js can remove it.
@@ -566,6 +611,10 @@ try {
   await waitForServer(child);
   const { token, jpeg } = await apiFlows(storage, gemini);
   console.log(`  ok   scan → upload → serve → export → draft delete (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await readinessProvesBucket(storage);
+  console.log(`  ok   /api/ready proves the bucket answers, 503 when it does not (${Date.now() - step}ms)`);
 
   step = Date.now();
   await failedDraftCleanupFlow(storage, token, jpeg);

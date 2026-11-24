@@ -58,6 +58,41 @@ function storageEnabled() {
   return Boolean(storageConfig());
 }
 
+// storageEnabled() only proves two env vars are non-empty. The bucket can still
+// be missing, renamed, or the key revoked — which stays invisible until the first
+// scan fails with a 400 halfway through a user's workflow. This asks Storage
+// directly: GET /storage/v1/bucket/<name> answers 2xx only when the key is
+// accepted and the bucket exists, so a wrong SUPABASE_STORAGE_BUCKET surfaces at
+// boot and on /api/ready instead of on someone's first photo.
+async function checkStorage() {
+  const config = storageConfig();
+  if (!config) {
+    return { ok: false, configured: false, reason: 'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are not set' };
+  }
+  try {
+    const response = await fetch(`${config.url}/storage/v1/bucket/${encodeURIComponent(config.bucket)}`, {
+      headers: { authorization: `Bearer ${config.key}`, apikey: config.key },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) return { ok: true, configured: true, bucket: config.bucket };
+    const detail = (await response.text().catch(() => '')).slice(0, 160);
+    return {
+      ok: false,
+      configured: true,
+      bucket: config.bucket,
+      status: response.status,
+      reason: `bucket "${config.bucket}" check returned ${response.status}${detail ? `: ${detail}` : ''}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      configured: true,
+      bucket: config.bucket,
+      reason: `bucket "${config.bucket}" check failed: ${err.message}`,
+    };
+  }
+}
+
 function ensureDir() {
   fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 }
@@ -163,5 +198,5 @@ async function deletePhoto(photoId) {
 
 module.exports = {
   shrink, savePhoto, putPhoto, readPhoto, deletePhoto,
-  isValidPhotoId, photoIdFromThumb, storageEnabled, PHOTOS_DIR,
+  isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, PHOTOS_DIR,
 };
