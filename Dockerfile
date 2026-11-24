@@ -18,7 +18,7 @@ ENV PORT=10000
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json package-lock.json* ./
-COPY server.js db.js db-pg.js auth.js mailer.js gemini.js photos.js ./
+COPY server.js db.js db-pg.js backup.js auth.js mailer.js gemini.js photos.js ./
 COPY scripts ./scripts
 COPY public ./public
 # Runs as root by default: there is no disk to mount, but sharp/build artefacts
