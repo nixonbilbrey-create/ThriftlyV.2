@@ -230,12 +230,13 @@ function makeZip(files) {
     // Real docx/xlsx members are deflated; exercise both storage methods.
     const payload = file.deflate ? zlib.deflateRawSync(file.data) : file.data;
     const method = file.deflate ? 8 : 0;
+    const claimed = file.claim || size; // headers can lie; the extractor must not believe them
     const local = Buffer.alloc(30 + name.length);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(method, 8);
     local.writeUInt32LE(payload.length, 18);
-    local.writeUInt32LE(size, 22);
+    local.writeUInt32LE(claimed, 22);
     local.writeUInt16LE(name.length, 26);
     name.copy(local, 30);
 
@@ -245,7 +246,7 @@ function makeZip(files) {
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(method, 10);
     central.writeUInt32LE(payload.length, 20);
-    central.writeUInt32LE(size, 24);
+    central.writeUInt32LE(claimed, 24);
     central.writeUInt16LE(name.length, 28);
     central.writeUInt32LE(offset, 42);
     name.copy(central, 46);
@@ -655,6 +656,85 @@ async function heicRejectionFlow(token) {
   assert.equal(await draftCount(), before, 'a refused upload leaves no draft behind');
 }
 
+// ---------- hostile input ----------
+// The upload path takes arbitrary files, so each one is treated as hostile:
+// programs renamed as images, archives claiming huge members, malformed
+// containers, SVGs that pull in URLs, and images too big to decode safely.
+async function maliciousUploadFlow(token) {
+  const listDrafts = async () => json(await fetch(`${BASE}/api/drafts`, { headers: authHeaders(token) }));
+  const before = await listDrafts();
+  const upload = async (bytes, type, name) => {
+    const form = new FormData();
+    form.append('photo', new Blob([bytes], { type }), name);
+    const res = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form });
+    return { res, body: await json(res) };
+  };
+
+  const program = Buffer.alloc(512);
+  program.write('MZ', 0, 'ascii');
+  const exe = await upload(program, 'image/png', 'photo.png');
+  assert.equal(exe.res.status, 415, 'a renamed program is refused');
+  assert.match(exe.body.error || '', /program/i, 'and is named as one');
+
+  const noise = await upload(Buffer.from('not a file at all, just bytes'), 'image/jpeg', 'x.jpg');
+  assert.equal(noise.res.status, 415, 'random bytes are refused');
+
+  // Truncated containers must fail closed, not 500.
+  const badZip = await upload(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(200, 7)]), 'application/zip', 'broken.zip');
+  assert.equal(badZip.res.status, 415, 'a truncated zip is refused, not a server error');
+  const badPdf = await upload(Buffer.from('%PDF-1.4\n' + 'x'.repeat(100)), 'application/pdf', 'broken.pdf');
+  assert.equal(badPdf.res.status, 415, 'a truncated PDF is refused too');
+
+  // A member that claims to expand to 100 MB is skipped before any inflation.
+  const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#003366' } }).png().toBuffer();
+  const bomb = makeZip([{ name: 'word/media/image1.png', data: png, deflate: true, claim: 100 * 1024 * 1024 }]);
+  const bombed = await upload(bomb, 'application/zip', 'bomb.zip');
+  assert.equal(bombed.res.status, 415, 'a zip member claiming 100 MB is skipped');
+
+  // Declared size is checked before rasterising.
+  const bigSvg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="200000" height="200000"><rect width="10" height="10"/></svg>');
+  const huge = await upload(bigSvg, 'image/svg+xml', 'huge.svg');
+  assert.equal(huge.res.status, 415, 'an SVG declaring a 200000px side is refused');
+  assert.match(huge.body.error || '', /too large|40 megapixels/i, 'and says the size is the problem');
+
+  // No outbound request on behalf of an uploaded file.
+  const hits = { count: 0 };
+  const leak = http.createServer((req, res) => { hits.count += 1; res.writeHead(200); res.end('x'); });
+  await new Promise((resolve) => leak.listen(0, '127.0.0.1', resolve));
+  try {
+    const remoteSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image href="http://127.0.0.1:${leak.address().port}/leak.png" width="10" height="10"/></svg>`);
+    const pulled = await upload(remoteSvg, 'image/svg+xml', 'remote.svg');
+    assert.equal(pulled.res.status, 415, 'an SVG that references a URL is refused');
+    assert.equal(hits.count, 0, 'and nothing was fetched from that URL');
+  } finally {
+    await new Promise((resolve) => leak.close(resolve));
+  }
+
+  // The size limit is enforced before the body reaches the route.
+  const oversized = await upload(Buffer.alloc(13 * 1024 * 1024), 'image/jpeg', 'big.jpg');
+  assert.equal(oversized.res.status, 413, 'an oversized upload is refused with 413');
+  assert.match(oversized.body.error || '', /12 MB/i, 'and names the limit');
+
+  // Polyglot: JPEG bytes with markup appended. Re-encoding must strip it.
+  const jpeg = await sharp({ create: { width: 320, height: 320, channels: 3, background: '#448844' } }).jpeg().toBuffer();
+  const polyglot = Buffer.concat([jpeg, Buffer.from('\n<script>alert(1)</script>')]);
+  const scanned = await upload(polyglot, 'image/jpeg', 'poly.jpg');
+  assert.equal(scanned.res.status, 201, 'a JPEG with rubbish appended still scans, because it is a JPEG');
+  const served = await fetch(`${BASE}${scanned.body.thumb}`);
+  assert.equal(served.headers.get('content-type'), 'image/jpeg');
+  assert.equal(served.headers.get('x-content-type-options'), 'nosniff', 'served photos are never sniffed');
+  assert.match(served.headers.get('content-security-policy') || '', /sandbox/, 'and are sandboxed if opened directly');
+  const bytes = Buffer.from(await served.arrayBuffer());
+  assert.equal(bytes[0], 0xff, 'the served file is the re-encoded jpeg');
+  assert.ok(!bytes.includes(Buffer.from('<script')), 'the appended markup did not survive storage');
+
+  assert.equal((await listDrafts()).length, before.length + 1, 'only the genuine image created a draft');
+  for (const draft of await listDrafts()) {
+    if (before.some((old) => old.id === draft.id)) continue;
+    await fetch(`${BASE}/api/drafts/${draft.id}`, { method: 'DELETE', headers: authHeaders(token) });
+  }
+}
+
 // ---------- the orphan-cleanup path ----------
 // Block the drafts insert at the database, then scan again: the photo is
 // uploaded first, so only the cleanup in server.js can remove it.
@@ -853,6 +933,10 @@ try {
   step = Date.now();
   await containerImageFlow(storage, token);
   console.log(`  ok   photo hidden in a PDF, docx zip and SVG is found and scanned (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await maliciousUploadFlow(token);
+  console.log(`  ok   hostile uploads refused: program, zip bomb, bad containers, remote SVG, 13MB, polyglot (${Date.now() - step}ms)`);
 
   step = Date.now();
   await readinessProvesBucket(storage);

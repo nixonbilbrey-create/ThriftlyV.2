@@ -131,6 +131,17 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   passwords, and API keys all travel in plain headers otherwise. 5xx errors
   stay generic to the client (details are logged server-side only), so an
   outage can't leak internals to users.
+- **Every upload is treated as hostile.** The scan route accepts documents, so
+  `extract.js` sniffs bytes instead of trusting extensions: executables (MZ/ELF/
+  Mach-O/shebang) are named and refused, images are capped at 40 megapixels from
+  their headers before anything decodes them, zip members claiming more than 25 MB
+  are skipped before inflation under a 48 MB total budget, absolute and `../`
+  member paths are ignored, and SVGs that reference URLs, carry scripts or declare
+  over 8000 px a side are refused — an upload can never make the server fetch a
+  URL. Whatever comes out is re-encoded by `shrink()`, which discards the original
+  bytes, appended payloads and EXIF: the stored file is always a fresh JPEG, served
+  with `nosniff` and a `default-src 'none'; sandbox` CSP. A malformed container is
+  a 415, never a 500.
 - **Photos live in private storage**, referenced from each draft by a
   same-origin URL — no multi-megabyte base64 blobs in the database. With
   `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` set they're uploaded to a

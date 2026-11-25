@@ -15,9 +15,13 @@ const sharp = require('sharp');
 // ---------- photo processing (resize/compress before storing) ----------
 const MAX_EDGE = 1400; // px, longest edge after resizing
 const JPEG_QUALITY = 82;
+// Ceiling on what a decoder is allowed to allocate: a 1400px cap only applies
+// after the full image has been decoded, so a 200-megapixel header would be a
+// memory bomb otherwise. Kept in step with extract.js.
+const MAX_INPUT_PIXELS = 40 * 1000 * 1000;
 
 async function shrink(buffer) {
-  const normalized = await sharp(buffer)
+  const normalized = await sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS, failOn: 'error' })
     .rotate() // auto-applies EXIF orientation so sideways phone photos stay upright
     .flatten({ background: '#ffffff' }) // transparent PNGs get paper, not black
     .resize({

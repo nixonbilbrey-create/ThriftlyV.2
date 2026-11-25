@@ -77,7 +77,12 @@ app.set('trust proxy', 1);
 // 12 MB: photos are normally a few MB, but a PDF or a zip with a product shot in
 // it is routinely bigger, and the whole file has to be in memory to look inside.
 const UPLOAD_LIMIT_MB = 12;
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: UPLOAD_LIMIT_MB * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  // One file, one field, no parts we didn't ask for — a multipart body can't be
+  // used to smuggle extra uploads past the scan route.
+  limits: { fileSize: UPLOAD_LIMIT_MB * 1024 * 1024, files: 1, fields: 6, parts: 8 },
+});
 // ---------- baseline security headers ----------
 // Registered FIRST so static file responses get them too. Kept explicit rather
 // than pulled in via helmet: the app renders inline scripts, so its CSP must
@@ -534,9 +539,15 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
       const named = req.file.originalname ? ` "${req.file.originalname}"` : '';
       const error = found.reason === 'legacy'
         ? `That looks like an older Office file (Word/Excel 97-2003)${named}. Save it as .docx or .xlsx, or export it as a PDF, and try again.`
-        : found.reason === 'unreadable'
-          ? `Thriftly found something image-like in${named || ' that file'} but couldn't read it. Try a JPEG or PNG of it.`
-          : `No image found in${named || ' that file'}. Thriftly needs a photo — upload one directly, or a PDF, Word, PowerPoint, Excel, OpenDocument, EPUB or zip file that contains one.`;
+        : found.reason === 'executable'
+          ? `That's a program, not a photo${named}. Thriftly only accepts images, or documents that contain one.`
+          : found.reason === 'too-large'
+            ? `That image is too large to process${named}. Thriftly caps images at 40 megapixels — resize it and try again.`
+            : found.reason === 'unsafe-svg'
+              ? `That SVG loads other files or scripts${named}, so it isn't accepted. Open it, export a PNG or JPEG, and upload that.`
+              : found.reason === 'unreadable'
+                ? `Thriftly found something image-like in${named || ' that file'} but couldn't read it. Try a JPEG or PNG of it.`
+                : `No image found in${named || ' that file'}. Thriftly needs a photo — upload one directly, or a PDF, Word, PowerPoint, Excel, OpenDocument, EPUB or zip file that contains one.`;
       return res.status(415).json({ error });
     }
 
@@ -606,6 +617,11 @@ app.get('/api/photos/:id', async (req, res) => {
   const photo = await readPhoto(req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   res.set('Content-Type', photo.mimetype);
+  // Only ever a re-encoded jpeg/png/gif/webp from this server, but state it: no
+  // sniffing into something executable, no script execution if a browser opens the
+  // URL directly.
+  res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.set('Content-Disposition', `inline; filename="${req.params.id}"`);
   res.set('Cache-Control', 'private, max-age=31536000, immutable'); // content never changes for a given id
   res.send(photo.buffer);
 });
