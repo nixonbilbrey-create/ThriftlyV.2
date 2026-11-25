@@ -19,8 +19,8 @@
   <h1>Privacy Policy</h1>
   <p class="lead">This policy explains exactly what Thriftly does with your data — in plain language. It's short on purpose.</p>
   <div class="card">
-    <span class="version">Version 2026-11-25</span>
-    <p style="font-size:13px;"><b>Last updated:</b> November 25, 2026 (documents are accepted as a source of the image; the original file is not stored). Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
+    <span class="version">Version 2026-11-25b</span>
+    <p style="font-size:13px;"><b>Last updated:</b> November 25, 2026 (revision b: backup wording corrected for the Supabase setup). Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
 
     <h2>Who runs Thriftly</h2>
     <p>Thriftly is a small app for people reselling secondhand items: you photograph something, the software identifies it, suggests a price and drafts listings for resale platforms. The operator is the person or entity that hosts the copy of Thriftly you're signing up on.</p>
@@ -68,8 +68,9 @@
 
     <h2>How long we keep things</h2>
     <p>Your account, drafts and photos are kept until you delete them. Verification and password-reset tokens are single-use, expire quickly, and are purged on a schedule. Deleting a draft removes its photo. Deleting your account (see below) removes everything at once from the live service.</p>
-    <p>Backups are different, and they cover less than people usually assume. Thriftly keeps no archive of its own on the server; the database is hosted by Supabase, and whether it is backed up automatically depends on the plan the operator chose. Supabase's <b>free plan includes no automatic backups</b> — on that plan, if it is ever lost, it is lost, unless the operator has exported their own copies. Paid plans keep daily database backups for 7 days (Pro), 14 (Team) or up to 30 (Enterprise), restorable inside Supabase but not downloadable. Where those backups exist, a deleted account can persist in one for up to that window; a backup is only ever restored to recover from a failure, never to bring back data you asked us to delete.</p>
-    <p>Your <b>photos are in no backup at all</b>, on any plan — Supabase's database backups don't include Storage objects. A photo exists only where you see it, so deleting a draft or your account removes it permanently; there is no archive to restore it from. The same goes for what was sent to Google (see above).</p>
+    <p><b>Backups are separate, and Supabase's do not cover everything.</b> The account database and the private photo bucket both live in Supabase. Supabase's automatic backups depend on the operator's plan: the <b>Free plan takes none</b>; Pro keeps daily <i>database</i> backups for 7 days, Team for 14, and Enterprise for up to 30. Point-in-time recovery is a separate paid add-on that can restore the database to a finer point inside its window. These backups cover the database — accounts, drafts, sessions and the records that point at photos — but <b>not the photo files in Storage</b>: restoring a database backup does not bring back a photo deleted since. Supabase's current physical backups are restored through its dashboard rather than handed over as a downloadable file, and deleting the Supabase project deletes its data and its backups.</p>
+    <p>The operator may also keep their own exports — a database dump and a copy of the photo bucket — outside Supabase, because the free plan has no automatic backups and no plan's database backup includes Storage. If they do, a deleted account or photo can remain in those copies until the operator's retention period ends. The Thriftly app server itself keeps no archive, and its optional SQLite backup scheduler does not run on this Postgres setup.</p>
+    <p>Where a backup exists, a deleted account can persist in it for the plan's or operator's retention window. Backups are only restored to recover from a failure, never to bring back data you asked us to delete on request. The same goes for what was sent to Google (see above).</p>
 
     <h2>Your rights and choices</h2>
     <ul>

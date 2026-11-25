@@ -14,10 +14,12 @@ copy out of it yourself.
 
 ## Two layers, on purpose
 
-1. **Supabase's own backups.** Dashboard → Database → Backups. Daily backups on
-   the free plan; point-in-time recovery depends on what you're paying for.
-   Lives in the same provider account as the app, so it covers "a row was
-   deleted", not "the account is gone".
+1. **Supabase's own backups.** Dashboard → Database → Backups. Daily database
+   backups on Pro (7 days), Team (14) and Enterprise (up to 30); **none on the
+   free plan**. Point-in-time recovery is a paid add-on, and every plan's
+   database backup excludes the Storage objects. Lives in the same provider
+   account as the app, so it covers "a row was deleted", not "the account is
+   gone".
 2. **An independent export you keep elsewhere.** A `pg_dump` of the database plus
    a copy of the bucket, stored off Supabase (R2/S3/B2, or a download you keep
    on your own machine). This is the layer that survives a provider problem.

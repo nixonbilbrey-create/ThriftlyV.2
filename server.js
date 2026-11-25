@@ -65,7 +65,7 @@ console.log(REQUIRE_EMAIL_VERIFICATION
 // Must match the version rendered in public/privacy.html: the smoke test fails if
 // the served page and this constant disagree. Bump both together — every signup
 // records it and /api/auth/me reports it back.
-const PRIVACY_VERSION = '2026-11-25';
+const PRIVACY_VERSION = '2026-11-25b';
 
 const app = express();
 // The app always runs behind a TLS-terminating proxy in production (Render,
