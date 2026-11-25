@@ -189,11 +189,13 @@ const scanLimiter = jsonRateLimit({
 });
 
 function verifyPageHtml({ ok, message }) {
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Thriftly</title>
-  <style>body{font-family:system-ui,sans-serif;max-width:400px;margin:80px auto;text-align:center;color:#1c1a17;padding:0 20px;}
-  h1{font-size:18px;}p{color:#4a4438;font-size:14px;line-height:1.5;}
-  a{display:inline-block;margin-top:14px;background:#1c1a17;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-size:13.5px;font-weight:600;}</style>
-  </head><body><h1>${ok ? '✅ Email verified' : '⚠️ Verification failed'}</h1><p>${message}</p><a href="/">Continue to Thriftly</a></body></html>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${ok ? 'Email verified' : 'Verification failed'} — Thriftly</title>
+  <link rel="stylesheet" href="/theme.css"></head>
+  <body><div class="verify-page"><div class="mark" aria-hidden="true">${ok ? '✓' : '!'}</div>
+  <h1>${ok ? 'Email verified' : 'That link did not work'}</h1><p>${message}</p>
+  <a href="/">Continue to Thriftly</a></div></body></html>`;
 }
 
 function sendError(res, err) {
