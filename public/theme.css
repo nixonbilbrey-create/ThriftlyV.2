@@ -113,7 +113,7 @@ label.check{
 /* A password field with its own reveal chip. The chip sits inside the field and is
    always on screen: no hover, no focus, no icon-only affordance to miss. */
 .field{position:relative;}
-.field input{padding-right:92px;}
+.field input{padding-right:76px;}
 .field .reveal{
   position:absolute;top:5px;right:6px;
   min-height:36px;padding:6px 14px;
