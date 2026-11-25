@@ -22,12 +22,46 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 | 9 | **Prove the backend:** `/api/ready` on the live origin | you | `{"ok":true,"db":"pg","storage":"ok"}` — `db:"sqlite"` means `DATABASE_URL` never arrived |
 | 10 | **Prove writes:** signup row, then a scanned photo | you | Row in Supabase `users`; object in the `photos` bucket; `/api/photos/<id>` serves it; deleting the draft removes it |
 | 11 | Confirm the Supabase plan's backup/PITR window | you | Dashboard shows daily backups (and PITR if the plan includes it). **Careful: the free plan has no automatic backups at all** — there is nothing to confirm, and items 12–13 are then your *only* backups, not optional extras |
-| 12 | Independent export off Supabase (`pg_dump` + a bucket copy to R2/S3/B2) | you | One dump and one photo archive exist outside Supabase |
+| 12 | **Take the first independent export** — database dump + photo bucket copy | you | Commands in [First export](#first-export-before-the-first-user-item-12) succeed; `pg_restore --list` shows 5 tables; both files are off Supabase and off Render |
 | 13 | Restore drill into a scratch project | you | Restored app boots, login works, drafts and a photo load |
 | 14 | External uptime monitor on `/api/ready` (and `/api/health` for liveness) | you | An alert within minutes of a database **or Storage** outage |
 | 15 | Custom domain + HTTPS | you | `https://yourdomain` serves the app; HTTP redirects; cert valid |
 | 16 | Smoke-test production like a stranger | you | Sign up → verify → login → Gemini key → scan → drafts → export → delete all pass |
 | 17 | Legal review of `/terms.html` and `/privacy.html`; real support inbox | you | A human (ideally a lawyer) read both; the address reaches someone who answers |
+
+### First export, before the first user (item 12)
+
+On the free plan there is no automatic backup, so until this export exists there
+is no copy of the database or the photos anywhere. Run it after item 10 has
+proved writes, and keep both files **off Supabase and off the Render host**.
+
+Prerequisites: `pg_dump`/`pg_restore` 17 (matching the Supabase server), the
+Supabase CLI logged in and linked (`supabase login`, then
+`supabase link --project-ref <project-ref>`), and `DATABASE_URL` set to the
+session-pooler URI from item 4.
+
+```bash
+STAMP=$(date +%F)
+
+# 1) Database: custom-format dump, no ownership/ACL noise
+pg_dump "$DATABASE_URL" --format=custom --no-owner --no-privileges \
+  --file "thriftly-$STAMP.dump"
+
+# 2) Photos: the private bucket, keeping object names (draft URLs depend on them)
+supabase --experimental storage cp --recursive --remote \
+  ss:///photos "./thriftly-photos-$STAMP"
+
+# 3) Prove the dump is complete: this must print 5
+pg_restore --list "thriftly-$STAMP.dump" | grep -c "TABLE DATA"
+
+# 4) Compare with the bucket's object count in the dashboard
+find "./thriftly-photos-$STAMP" -type f | wc -l
+```
+
+Then copy both files somewhere outside Supabase (R2/S3/B2, or an encrypted disk
+you control). A file sitting beside the thing it backs up does not count. The
+full restore drill, including restoring into a scratch project, is in
+[backup-restore.md](backup-restore.md#restore-drill-do-this-before-you-need-it).
 
 ### What the repo already does for launch
 
@@ -73,9 +107,10 @@ Rough timeline: **P0 is a half day**, most of it waiting on Render and DNS.
 - Add a second pair of eyes on abuse: review signups, drafts, and 429 rates.
 - Decide the data-retention story in writing. On a paid plan, Supabase backups
   and your own exports keep account data after deletion for their retention
-  window — the privacy policy now says so, and says that photos are in no
-  backup. On the free plan there are no automatic backups, so what survives a
-  deletion is exactly your own exports; keep that window short and deliberate.
+  window — the privacy policy now says so, and says that photos are not in
+  Supabase's database backups (an operator bucket export can include them). On
+  the free plan there are no automatic backups, so what survives a deletion is
+  exactly your own exports; keep that window short and deliberate.
 - Pin the Node version in CI/Docker if you want reproducibility beyond
   `node:22-slim` moving under you; bump dependencies deliberately, not on
   deploy day.
