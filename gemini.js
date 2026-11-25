@@ -23,12 +23,17 @@ const API_BASE = (process.env.NODE_ENV === 'production'
 // Gemini can accept a request and then never send response headers — reported
 // repeatedly on 3.8 Flash under load, and with structured output plus thinking
 // during earlier incidents. Without a deadline the scan request (and the browser
-// spinner waiting on it) never resolves, so cap every call and fail with a
-// retryable message instead. Tests lower this to keep the suite fast.
+// spinner waiting on it) never resolves. This is the budget for the whole
+// operation: each model attempt gets a slice, and a stall moves to the next
+// fallback instead of consuming the entire scan. Tests lower it for speed.
 const GEMINI_TIMEOUT_MS = (() => {
   const configured = Number(process.env.GEMINI_TIMEOUT_MS);
-  return Number.isFinite(configured) && configured >= 500 ? Math.min(configured, 120000) : 30000;
+  return Number.isFinite(configured) && configured >= 500 ? Math.min(configured, 120000) : 45000;
 })();
+const GEMINI_ATTEMPT_TIMEOUT_MS = 15000;
+// 429/5xx and timeouts are transient: try the next candidate rather than failing
+// the scan on the first overloaded model. Auth and bad-request errors are not.
+const RETRYABLE_GEMINI_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 async function fetchGemini(url, options, timeoutMs, publicMessage) {
   try {
@@ -111,42 +116,96 @@ async function callGeminiJSON({ apiKey, system, parts, maxTokens = 4096 }) {
     throw err;
   }
 
+  const candidates = modelCandidates();
+  const deadline = Date.now() + GEMINI_TIMEOUT_MS;
   let lastError = null;
-  for (const model of modelCandidates()) {
-    const res = await fetchGemini(
-      `${API_BASE}/models/${model}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] },
-          contents: [{ parts }],
-          generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
-        }),
-      },
-      GEMINI_TIMEOUT_MS,
-      'Gemini is taking too long to respond — it may be busy, so try again in a moment.',
-    );
-    const data = await res.json().catch(() => ({}));
+  let sawTransient = false;
 
+  for (let i = 0; i < candidates.length; i++) {
+    const model = candidates[i];
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    // Leave time for the remaining fallbacks. A single candidate gets the whole
+    // budget; otherwise no attempt gets more than 15s, so a silently stalled
+    // model cannot starve the ones behind it.
+    const attemptsLeft = candidates.length - i;
+    const attemptMs = candidates.length === 1
+      ? remaining
+      : Math.max(500, Math.min(GEMINI_ATTEMPT_TIMEOUT_MS, Math.floor(remaining / attemptsLeft)));
+
+    let res;
+    try {
+      res = await fetchGemini(
+        `${API_BASE}/models/${model}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ parts }],
+            generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
+          }),
+        },
+        attemptMs,
+        'Gemini is taking too long to respond — it may be busy, so try again in a moment.',
+      );
+    } catch (err) {
+      // A timeout or a dropped connection is worth trying on the next model; an
+      // auth or configuration error is not.
+      if (err && (err.code === 'GEMINI_TIMEOUT' || err.name === 'TypeError')) {
+        sawTransient = true;
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+
+    const data = await res.json().catch(() => ({}));
     if (res.ok) {
-      activeModel = model;
-      return parseModelJSON(data);
+      try {
+        const parsed = parseModelJSON(data);
+        activeModel = model; // reuse the model that actually answered
+        return parsed;
+      } catch (err) {
+        // A truncated/invalid response is a model failure, not a user error.
+        sawTransient = true;
+        lastError = err;
+        continue;
+      }
     }
 
     const err = new Error('Gemini API error');
     err.status = res.status;
     err.detail = data;
     err.model = model;
-    if (!isModelUnavailable(res.status, data)) throw err;
-    lastError = err;
+    if (isModelUnavailable(res.status, data)) {
+      lastError = err;
+      continue;
+    }
+    if (RETRYABLE_GEMINI_STATUS.has(res.status)) {
+      sawTransient = true;
+      err.publicMessage = 'Gemini is busy right now — try again in a moment.';
+      lastError = err;
+      continue;
+    }
+    throw err;
   }
 
-  const err = new Error(
-    `Gemini model "${MODEL}" is not available to this key, and none of the fallbacks worked ` +
-    `(${MODEL_FALLBACKS.join(', ')}). Set GEMINI_MODEL to a model this key can use.`,
-  );
-  err.status = lastError ? lastError.status : 502;
+  // If every model was simply missing from this key, keep the actionable setup
+  // message instead of blaming transient load.
+  if (!sawTransient && lastError && isModelUnavailable(lastError.status, lastError.detail)) {
+    const err = new Error(
+      `Gemini model "${MODEL}" is not available to this key, and none of the fallbacks worked ` +
+      `(${MODEL_FALLBACKS.join(', ')}). Set GEMINI_MODEL to a model this key can use.`,
+    );
+    err.status = lastError.status;
+    err.detail = lastError.detail;
+    throw err;
+  }
+
+  const err = new Error('Gemini did not answer after trying the available models');
+  err.status = lastError && lastError.status ? lastError.status : 504;
+  err.publicMessage = (lastError && lastError.publicMessage) || 'Gemini is busy right now — try again in a moment.';
   err.detail = lastError && lastError.detail;
   throw err;
 }

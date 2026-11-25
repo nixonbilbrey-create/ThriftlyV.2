@@ -640,11 +640,11 @@
       }
       const fd = new FormData();
       fd.append('photo', upload);
-      // The server bounds Gemini at 30s; this is the last line of defence for a
-      // proxy or network stall, so the button can never spin forever.
+      // The server retries models within a 45s budget; this is the last line of
+      // defence for a proxy or network stall, so the button can never spin forever.
       const controller = new AbortController();
       let timedOut = false;
-      const timeoutTimer = setTimeout(() => { timedOut = true; controller.abort(); }, 45000);
+      const timeoutTimer = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
       try {
         const res = await api('/api/scan', { method: 'POST', body: fd, signal: controller.signal });
         const data = await res.json();

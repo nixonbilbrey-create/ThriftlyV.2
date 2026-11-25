@@ -157,7 +157,7 @@ function startFakeStorage() {
 // generateContent (the analysis behind /api/scan).
 function startFakeGemini() {
   const requests = [];
-  let hanging = false;
+  const hanging = new Set();
   const analysis = {
     item_type: 'wool scarf',
     brand: 'Acme',
@@ -179,8 +179,9 @@ function startFakeGemini() {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
+      const rawBody = Buffer.concat(chunks).toString('utf8');
       let body = null;
-      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* models GET has no body */ }
+      try { body = JSON.parse(rawBody); } catch { /* models GET has no body */ }
       requests.push({
         path: req.url,
         key: req.headers['x-goog-api-key'] || null,
@@ -188,12 +189,12 @@ function startFakeGemini() {
       });
 
       if (req.method === 'POST' && req.url === '/__control/hang') {
-        hanging = true;
+        hanging.add(rawBody.trim() || '*');
         res.writeHead(204);
         return res.end();
       }
       if (req.method === 'POST' && req.url === '/__control/resume') {
-        hanging = false;
+        hanging.clear();
         res.writeHead(204);
         return res.end();
       }
@@ -203,8 +204,8 @@ function startFakeGemini() {
       }
       const generate = /^\/v1beta\/models\/([^/:]+):generateContent$/.exec(req.url);
       if (req.method === 'POST' && generate) {
-        if (hanging) return; // accepted, but deliberately never answer
         const model = generate[1];
+        if (hanging.has('*') || hanging.has(model)) return; // accepted, never answered
         if (RETIRED_MODELS.has(model)) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({
@@ -444,8 +445,9 @@ function startApp(storage, gemini) {
       // Deliberately a retired ID: every scan in this suite then has to fall back.
       GEMINI_MODEL: 'gemini-3.5-flash',
       GEMINI_MODEL_FALLBACKS: 'gemini-3.6-flash,gemini-flash-latest',
-      // Keep the stalled-Gemini test fast; the production default is 30s.
-      GEMINI_TIMEOUT_MS: '500',
+      // Three 500ms attempts: enough budget for the stall tests to reach the
+      // fallbacks. The production default is 45s.
+      GEMINI_TIMEOUT_MS: '1500',
       SMTP_HOST: '',
       // This suite drives the verification flow on purpose (it signs up through the
       // dev link); with no relay the app would otherwise skip the gate.
@@ -579,9 +581,32 @@ async function apiFlows(storage, gemini) {
   return { token, jpeg };
 }
 
-// ---------- a Gemini request that never answers ----------
+// ---------- a stalled model falls through to the next candidate ----------
+// 3.6 Flash is the active model after the first scan. Make only that model hang:
+// the scan must abandon it and finish on gemini-flash-latest, then reuse the
+// winner on the next request.
+async function fallbackAfterStallFlow(storage, gemini, token, jpeg) {
+  await fetch(`${gemini.url}/__control/hang`, { method: 'POST', body: 'gemini-3.6-flash' });
+  const before = gemini.requests.length;
+  try {
+    const res = await fetch(`${BASE}/api/scan`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}` }, body: photoForm(jpeg),
+    });
+    const draft = await json(res);
+    assert.equal(res.status, 201, `a stalled model must fall back, not fail -> ${res.status} ${JSON.stringify(draft)}`);
+    const attempted = gemini.requests.slice(before).map((r) => r.path);
+    assert.ok(attempted.some((p) => p.includes('/models/gemini-3.6-flash:generateContent')), 'the stalled model was tried');
+    assert.ok(attempted.some((p) => p.includes('/models/gemini-flash-latest:generateContent')), 'and the scan finished on the next candidate');
+    const del = await fetch(`${BASE}/api/drafts/${draft.id}`, { method: 'DELETE', headers: authHeaders(token) });
+    assert.equal(del.status, 204, 'the fallback scan can be cleaned up normally');
+  } finally {
+    await fetch(`${gemini.url}/__control/resume`, { method: 'POST' });
+  }
+}
+
+// ---------- every Gemini candidate never answers ----------
 // The fake accepts the connection and then sends nothing, which is exactly what
-// 3.8 Flash has done under load. The scan must hit its deadline, return a clear
+// 3.8 Flash has done under load. The scan must exhaust its budget, return a clear
 // 504, and delete the photo it started uploading alongside the model call.
 async function stalledGeminiFlow(storage, gemini, token, jpeg) {
   await fetch(`${gemini.url}/__control/hang`, { method: 'POST' });
@@ -1034,8 +1059,12 @@ try {
   console.log(`  ok   scan → upload → serve → export → draft delete (${Date.now() - step}ms)`);
 
   step = Date.now();
+  await fallbackAfterStallFlow(storage, gemini, token, jpeg);
+  console.log(`  ok   scan falls back when a model stalls (${Date.now() - step}ms)`);
+
+  step = Date.now();
   await stalledGeminiFlow(storage, gemini, token, jpeg);
-  console.log(`  ok   scan fails fast when Gemini stalls (${Date.now() - step}ms)`);
+  console.log(`  ok   scan fails fast when every model stalls (${Date.now() - step}ms)`);
 
   step = Date.now();
   await heicRejectionFlow(token);
