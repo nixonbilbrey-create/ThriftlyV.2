@@ -7,7 +7,7 @@
 // that don't need a real Gemini key: accounts, email verification, password
 // reset, drafts CRUD shape, photo storage/serving, rate limiting.
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
+import { rmSync, mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 
@@ -33,6 +33,25 @@ const tokenFrom = (link) => {
   const m = /[?&]token=([a-f0-9]+)/.exec(link || '');
   return m ? m[1] : null;
 };
+
+// The image is assembled from an explicit COPY list, so a new runtime module can
+// pass every test here and still crash the container on boot — which is exactly
+// what happened to extract.js. Check the list against server.js's requires.
+function dockerfileCoversRuntime() {
+  const dockerfile = readFileSync('Dockerfile', 'utf8');
+  const server = readFileSync('server.js', 'utf8');
+  const copied = new Set();
+  for (const line of dockerfile.split('\n')) {
+    if (!line.startsWith('COPY ')) continue;
+    for (const token of line.slice(5).trim().split(/\s+/)) {
+      if (!token.startsWith('--')) copied.add(token.replace(/^\.\//, ''));
+    }
+  }
+  const required = [...server.matchAll(/require\('\.\/([^']+)'\)/g)].map((m) => m[1]);
+  const missing = required.filter((file) =>
+    ![file, `${file}.js`, `${file}.json`].some((candidate) => copied.has(candidate)));
+  assert.deepEqual(missing, [], `Dockerfile COPY is missing a runtime module: ${missing.join(', ')}`);
+}
 
 function startServer() {
   // DB + photos live under a throwaway dir so the repo stays clean.
@@ -783,6 +802,9 @@ try {
   const tNoVerify = Date.now();
   await verificationModeFlow();
   console.log(`  ok   no mail relay signs up without email; explicit on/off still win (${Date.now() - tNoVerify}ms)`);
+  const tDocker = Date.now();
+  dockerfileCoversRuntime();
+  console.log(`  ok   production image copies every runtime module (${Date.now() - tDocker}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);
