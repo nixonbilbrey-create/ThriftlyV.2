@@ -157,6 +157,13 @@ const sqlite = {
     return db.prepare('SELECT * FROM sessions WHERE token = ?').get(token) || null;
   },
 
+  // Session + user in one query, mirroring db-pg's join; expired sessions are
+  // filtered in SQL so callers cannot accidentally accept one.
+  async getSessionUser(db, token) {
+    return db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+                       WHERE s.token = ? AND s.expires_at >= ?`).get(token, Date.now()) || null;
+  },
+
   async deleteSession(db, token) {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
   },
@@ -311,6 +318,7 @@ async function setUserPasswordHash(db, userId, hash) { return backend(db).setUse
 async function setUserConsent(db, userId, version, at) { return backend(db).setUserConsent(db, userId, version, at); }
 async function createSession(db, args) { return backend(db).createSession(db, args); }
 async function getSession(db, token) { return backend(db).getSession(db, token); }
+async function getSessionUser(db, token) { return backend(db).getSessionUser(db, token); }
 async function deleteSession(db, token) { return backend(db).deleteSession(db, token); }
 async function cleanupExpiredSessions(db) { return backend(db).cleanupExpiredSessions(db); }
 async function deleteSessionsForUser(db, userId) { return backend(db).deleteSessionsForUser(db, userId); }
@@ -334,7 +342,7 @@ async function clearDrafts(db, userId) { return backend(db).clearDrafts(db, user
 module.exports = {
   initDb, publicUser, ping,
   createUser, getUserByEmail, getUserById, markUserVerified, setUserGeminiKey, clearUserGeminiKey, deleteUserRow,
-  createSession, getSession, deleteSession, cleanupExpiredSessions, runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS: 60 * 60 * 1000,
+  createSession, getSession, getSessionUser, deleteSession, cleanupExpiredSessions, runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS: 60 * 60 * 1000,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
   setUserPasswordHash, setUserConsent, deleteSessionsForUser,

@@ -55,19 +55,17 @@ function decrypt(payload) {
 // ---------- auth middleware ----------
 // Reads "Authorization: Bearer <token>", looks the session up, attaches req.userId / req.user.
 function requireAuth(db) {
-  const { getSession, getUserById } = require('./db');
+  const { getSessionUser } = require('./db');
   return async (req, res, next) => {
     try {
       const header = req.headers.authorization || '';
       const token = header.startsWith('Bearer ') ? header.slice(7) : null;
       if (!token) return res.status(401).json({ error: 'Missing Authorization header (Bearer token)' });
 
-      const session = await getSession(db, token);
-      if (!session || Number(session.expires_at) < Date.now()) {
-        return res.status(401).json({ error: 'Invalid or expired session — log in again' });
-      }
-      const user = await getUserById(db, session.user_id);
-      if (!user) return res.status(401).json({ error: 'User not found' });
+      // One query instead of session-then-user, which halves the database round
+      // trips on every authenticated request (including boot and scan).
+      const user = await getSessionUser(db, token);
+      if (!user) return res.status(401).json({ error: 'Invalid or expired session — log in again' });
 
       req.token = token;
       req.userId = user.id;

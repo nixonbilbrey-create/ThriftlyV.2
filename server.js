@@ -572,13 +572,34 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
       bad.status = 400;
       throw bad;
     }
+    // Start the storage upload alongside the model call instead of after it. On
+    // Supabase that hides a full network round trip behind Gemini's thinking time.
+    // Attach the rejection handler now so a failed upload can't go unhandled while
+    // the model request is still in flight.
+    const photoPromise = savePhoto(normalized.buffer, normalized.mimetype).then(
+      (photo) => ({ photo }),
+      (error) => ({ error }),
+    );
     const base64 = normalized.buffer.toString('base64');
-    const analysis = await callGeminiJSON({
-      apiKey, system: ANALYZE_SYSTEM_PROMPT, parts: analyzeParts(base64, normalized.mimetype),
-    });
+    let analysis;
+    try {
+      analysis = await callGeminiJSON({
+        apiKey, system: ANALYZE_SYSTEM_PROMPT, parts: analyzeParts(base64, normalized.mimetype),
+        thinkingLevel: 'low',
+      });
+    } catch (err) {
+      // If the model fails but the upload succeeded, remove the orphan before
+      // returning the error. Failure is rare enough that waiting for the upload
+      // is cheaper than leaking an object.
+      const stored = await photoPromise;
+      if (stored.photo) await deletePhoto(stored.photo.photoId).catch(() => {});
+      throw err;
+    }
 
     // Photo stored as a resized file, referenced by URL — see photos.js.
-    const photo = await savePhoto(normalized.buffer, normalized.mimetype);
+    const stored = await photoPromise;
+    if (stored.error) throw stored.error;
+    const photo = stored.photo;
     let draft;
     try {
       draft = await createDraft(db, req.userId, { analysis, thumb: photo.url, selected: PLATFORMS });

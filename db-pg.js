@@ -93,6 +93,14 @@ async function getSession(db, token) {
   return one(db, 'select * from sessions where token = $1', [token]);
 }
 
+// Session + user in one round trip. Every authenticated request used to make
+// two: look up the session, then the user. The join also enforces expiry in SQL.
+async function getSessionUser(db, token) {
+  return one(db,
+    'select u.* from sessions s join users u on u.id = s.user_id where s.token = $1 and s.expires_at >= $2',
+    [token, Date.now()]);
+}
+
 async function deleteSession(db, token) {
   await db.pool.query('delete from sessions where token = $1', [token]);
 }
@@ -244,7 +252,7 @@ module.exports = {
   createUser, getUserByEmail, getUserById, deleteUserRow,
   markUserVerified, setUserGeminiKey, clearUserGeminiKey,
   setUserPasswordHash, setUserConsent,
-  createSession, getSession, deleteSession, cleanupExpiredSessions, deleteSessionsForUser,
+  createSession, getSession, getSessionUser, deleteSession, cleanupExpiredSessions, deleteSessionsForUser,
   createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser, cleanupExpiredVerifications,
   createPasswordReset, getPasswordReset, deletePasswordResetsForUser, cleanupExpiredPasswordResets,
   runCleanup, startCleanupLoop, CLEANUP_INTERVAL_MS,

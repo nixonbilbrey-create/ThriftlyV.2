@@ -69,8 +69,16 @@ function parseModelJSON(data) {
   }
 }
 
+// Gemini 3.8 Flash defaults to medium thinking. Low is the documented
+// latency-minimizing level and is enough for photo identification and pricing;
+// older/aliased models don't accept the field, so only send it where it applies.
+const THINKING_LEVELS = new Set(['low', 'medium', 'high']);
+function supportsThinkingLevel(model) {
+  return /^gemini-(3|4)(?:[.-]|$)/i.test(String(model));
+}
+
 // Calls generateContent with the given user's key, forcing JSON output, and parses it.
-async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800 }) {
+async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800, thinkingLevel }) {
   if (!apiKey) {
     const err = new Error('No Gemini API key connected — add one in Settings first');
     err.status = 400;
@@ -79,13 +87,17 @@ async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800 }) {
 
   let lastError = null;
   for (const model of modelCandidates()) {
+    const generationConfig = { responseMimeType: 'application/json', maxOutputTokens: maxTokens };
+    if (thinkingLevel && THINKING_LEVELS.has(thinkingLevel) && supportsThinkingLevel(model)) {
+      generationConfig.thinkingConfig = { thinkingLevel };
+    }
     const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ parts }],
-        generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
+        generationConfig,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -172,6 +184,6 @@ function listingParts(analysis) {
 }
 
 module.exports = {
-  PLATFORMS, MODEL, MODEL_FALLBACKS, API_BASE, testGeminiKey, callGeminiJSON, modelCandidates,
+  PLATFORMS, MODEL, MODEL_FALLBACKS, API_BASE, testGeminiKey, callGeminiJSON, modelCandidates, supportsThinkingLevel,
   ANALYZE_SYSTEM_PROMPT, LISTING_SYSTEM_PROMPT, analyzeParts, listingParts,
 };

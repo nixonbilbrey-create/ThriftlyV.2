@@ -264,9 +264,17 @@
       captchaToken = '';
       if (turnstileWidgetId !== null && window.turnstile) window.turnstile.reset(turnstileWidgetId);
     }
+    // One config request for both CAPTCHA setup and the re-consent check.
+    let configPromise = null;
+    function fetchAppConfig() {
+      if (!configPromise) {
+        configPromise = fetch('/api/config').then(r => r.json()).catch(() => ({}));
+      }
+      return configPromise;
+    }
     async function setupCaptcha() {
       try {
-        const cfg = await (await fetch('/api/config')).json();
+        const cfg = await fetchAppConfig();
         if (!cfg.turnstileSiteKey) return; // server has no secret — nothing to render
         const script = document.createElement('script');
         script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
@@ -364,29 +372,31 @@
 
     async function tryResumeSession() {
       if (!token) return;
-      const res = await api('/api/auth/me');
-      if (!res.ok) { token = null; localStorage.removeItem('thriftly_token'); return; }
-      me = await res.json();
-      enterApp();
+      // Both calls only need the stored token, so start them together. Otherwise
+      // the draft list waits for /api/auth/me to finish first, adding a full
+      // database round trip before the first paint of the app.
+      const [meRes, draftsRes] = await Promise.all([api('/api/auth/me'), api('/api/drafts')]);
+      if (!meRes.ok) { token = null; localStorage.removeItem('thriftly_token'); return; }
+      me = await meRes.json();
+      const drafts = draftsRes.ok ? await draftsRes.json() : null;
+      enterApp(drafts);
     }
 
-    function enterApp() {
+    function enterApp(preloadedDrafts) {
       authView.style.display = 'none';
       appView.style.display = 'block';
       document.getElementById('whoami').textContent = me.email;
       renderKeyStatus();
-      loadDraftList();
+      if (Array.isArray(preloadedDrafts)) renderDraftList(preloadedDrafts);
+      else loadDraftList();
       enforceReconsent();
     }
 
     // ---------- re-consent when the policy version moves on ----------
     // The current version is served by /api/config; acceptance is recorded by
     // POST /api/auth/consent and only then does the overlay go away.
-    let appConfig = null;
     async function loadAppConfig() {
-      if (appConfig) return appConfig;
-      try { appConfig = await (await fetch('/api/config')).json(); } catch (err) { appConfig = {}; }
-      return appConfig;
+      return fetchAppConfig();
     }
     async function enforceReconsent() {
       if (!me) return;
@@ -718,7 +728,11 @@
       const draftList = document.getElementById('draftList');
       draftList.innerHTML = skeletonDraftList();
       const res = await api('/api/drafts');
-      const drafts = await res.json();
+      renderDraftList(await res.json());
+    }
+
+    function renderDraftList(drafts) {
+      const draftList = document.getElementById('draftList');
       draftList.innerHTML = drafts.map(d => {
         const n = Object.keys(d.listings).length;
         const posted = Object.values(d.listings).filter(l => l.posted).length;

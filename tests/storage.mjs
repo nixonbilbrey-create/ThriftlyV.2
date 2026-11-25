@@ -175,9 +175,16 @@ function startFakeGemini() {
   };
 
   const handler = (req, res) => {
-    req.resume(); // no response depends on the request body
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
-      requests.push({ path: req.url, key: req.headers['x-goog-api-key'] || null });
+      let body = null;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* models GET has no body */ }
+      requests.push({
+        path: req.url,
+        key: req.headers['x-goog-api-key'] || null,
+        thinking: body?.generationConfig?.thinkingConfig || null,
+      });
 
       if (req.method === 'GET' && req.url === '/v1beta/models') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -516,6 +523,12 @@ async function apiFlows(storage, gemini) {
   assert.ok(
     gemini.requests.some((r) => r.path === '/v1beta/models/gemini-3.6-flash:generateContent' && r.key === 'fake-gemini-key-abc123'),
     'a retired model id falls back to the next candidate instead of failing the scan',
+  );
+  const fallbackCall = gemini.requests.find((r) => r.path === '/v1beta/models/gemini-3.6-flash:generateContent');
+  assert.deepEqual(
+    fallbackCall.thinking,
+    { thinkingLevel: 'low' },
+    'scan asks Gemini for low thinking to cut latency',
   );
 
   // ---- serving reads back from Storage ----
