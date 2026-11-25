@@ -158,6 +158,8 @@ function startFakeStorage() {
 function startFakeGemini() {
   const requests = [];
   const hanging = new Set();
+  const hangOnce = new Set();
+  let failOnceStatus = null;
   const analysis = {
     item_type: 'wool scarf',
     brand: 'Acme',
@@ -195,6 +197,18 @@ function startFakeGemini() {
       }
       if (req.method === 'POST' && req.url === '/__control/resume') {
         hanging.clear();
+        hangOnce.clear();
+        failOnceStatus = null;
+        res.writeHead(204);
+        return res.end();
+      }
+      if (req.method === 'POST' && req.url === '/__control/fail-once') {
+        failOnceStatus = Number(rawBody.trim()) || 503;
+        res.writeHead(204);
+        return res.end();
+      }
+      if (req.method === 'POST' && req.url === '/__control/hang-once') {
+        hangOnce.add(rawBody.trim() || '*');
         res.writeHead(204);
         return res.end();
       }
@@ -205,7 +219,15 @@ function startFakeGemini() {
       const generate = /^\/v1beta\/models\/([^/:]+):generateContent$/.exec(req.url);
       if (req.method === 'POST' && generate) {
         const model = generate[1];
+        if (hangOnce.has('*')) { hangOnce.delete('*'); return; } // accepted once, never answered
+        if (hangOnce.has(model)) { hangOnce.delete(model); return; }
         if (hanging.has('*') || hanging.has(model)) return; // accepted, never answered
+        if (failOnceStatus) {
+          const status = failOnceStatus;
+          failOnceStatus = null;
+          res.writeHead(status, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: { code: status, message: 'temporary capacity blip' } }));
+        }
         if (RETIRED_MODELS.has(model)) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({
@@ -445,9 +467,10 @@ function startApp(storage, gemini) {
       // Deliberately a retired ID: every scan in this suite then has to fall back.
       GEMINI_MODEL: 'gemini-3.5-flash',
       GEMINI_MODEL_FALLBACKS: 'gemini-3.6-flash,gemini-flash-latest',
-      // Three 500ms attempts: enough budget for the stall tests to reach the
-      // fallbacks. The production default is 45s.
-      GEMINI_TIMEOUT_MS: '1500',
+      // Three candidates plus the one retry, each bounded to ~625ms: enough
+      // budget for a timeout retry and the stall/fallback tests. The production
+      // default is 45s.
+      GEMINI_TIMEOUT_MS: '3000',
       SMTP_HOST: '',
       // This suite drives the verification flow on purpose (it signs up through the
       // dev link); with no relay the app would otherwise skip the gate.
@@ -579,6 +602,35 @@ async function apiFlows(storage, gemini) {
   );
   assert.equal((await fetch(`${BASE}${draft.thumb}`)).status, 404, 'the deleted photo no longer serves');
   return { token, jpeg };
+}
+
+// ---------- a one-off capacity blip gets one retry ----------
+// Each of these fails the first generateContent once. The scan must wait for the
+// short backoff, retry the same model, and never consume a fallback candidate.
+async function capacityBlipFlow(storage, gemini, token, jpeg) {
+  const cases = [
+    { label: '503', control: '/__control/fail-once', body: '503' },
+    { label: '429', control: '/__control/fail-once', body: '429' },
+    { label: 'timeout', control: '/__control/hang-once', body: '*' },
+  ];
+
+  for (const item of cases) {
+    await fetch(`${gemini.url}${item.control}`, { method: 'POST', body: item.body });
+    const before = gemini.requests.length;
+    const started = Date.now();
+    const res = await fetch(`${BASE}/api/scan`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}` }, body: photoForm(jpeg),
+    });
+    const elapsed = Date.now() - started;
+    const draft = await json(res);
+    assert.equal(res.status, 201, `${item.label}: a one-off capacity blip must not fail the scan -> ${res.status} ${JSON.stringify(draft)}`);
+    const attempted = gemini.requests.slice(before).map((r) => r.path).filter((p) => /generateContent$/.test(p));
+    assert.equal(attempted.length, 2, `${item.label}: the scan retries once instead of falling through`);
+    assert.equal(attempted[0], attempted[1], `${item.label}: the retry stays on the same model`);
+    assert.ok(elapsed >= 350, `${item.label}: the retry waits for its backoff (took ${elapsed}ms)`);
+    const del = await fetch(`${BASE}/api/drafts/${draft.id}`, { method: 'DELETE', headers: authHeaders(token) });
+    assert.equal(del.status, 204, `${item.label}: the retried scan can be cleaned up normally`);
+  }
 }
 
 // ---------- a stalled model falls through to the next candidate ----------
@@ -1057,6 +1109,10 @@ try {
   await waitForServer(child);
   const { token, jpeg } = await apiFlows(storage, gemini);
   console.log(`  ok   scan → upload → serve → export → draft delete (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await capacityBlipFlow(storage, gemini, token, jpeg);
+  console.log(`  ok   Gemini 503/429/timeout retries once with backoff (${Date.now() - step}ms)`);
 
   step = Date.now();
   await fallbackAfterStallFlow(storage, gemini, token, jpeg);
