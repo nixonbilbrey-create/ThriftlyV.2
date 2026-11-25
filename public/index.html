@@ -264,18 +264,29 @@
       captchaToken = '';
       if (turnstileWidgetId !== null && window.turnstile) window.turnstile.reset(turnstileWidgetId);
     }
-    // One config request for both CAPTCHA setup and the re-consent check.
+    // One config request for both CAPTCHA setup and the re-consent check. A
+    // failed lookup is not cached: clearing the promise lets the next check try
+    // again instead of silently treating the policy as unchanged.
     let configPromise = null;
     function fetchAppConfig() {
       if (!configPromise) {
-        configPromise = fetch('/api/config').then(r => r.json()).catch(() => ({}));
+        configPromise = fetch('/api/config')
+          .then(r => {
+            if (!r.ok) throw new Error('config request failed (' + r.status + ')');
+            return r.json();
+          })
+          .catch(err => {
+            configPromise = null;
+            console.warn('config unavailable:', err);
+            return null;
+          });
       }
       return configPromise;
     }
     async function setupCaptcha() {
       try {
         const cfg = await fetchAppConfig();
-        if (!cfg.turnstileSiteKey) return; // server has no secret — nothing to render
+        if (!cfg || !cfg.turnstileSiteKey) return; // no config yet, or no secret — nothing to render
         const script = document.createElement('script');
         script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
         script.async = true; script.defer = true;
@@ -398,9 +409,15 @@
     async function loadAppConfig() {
       return fetchAppConfig();
     }
-    async function enforceReconsent() {
+    async function enforceReconsent(attempt = 0) {
       if (!me) return;
       const cfg = await loadAppConfig();
+      if (!cfg) {
+        // A failed config request must not silently turn off re-consent. The
+        // shared promise was cleared, so each retry is a fresh request.
+        if (attempt < 2) setTimeout(() => enforceReconsent(attempt + 1), 1000);
+        return;
+      }
       if (!cfg.privacyVersion || me.policyVersion === cfg.privacyVersion) return;
       document.getElementById('reconsentVersion').textContent = cfg.privacyVersion;
       document.getElementById('reconsentOverlay').style.display = 'block';
