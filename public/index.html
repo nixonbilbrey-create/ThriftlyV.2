@@ -537,23 +537,56 @@
       if (e.target.files[0]) setPickedFile(e.target.files[0]);
     });
 
-    // iPhone photos arrive as HEIC, which the server's sharp build cannot decode
-    // (libvips there has no HEVC support — only AVIF). Safari and iOS can decode
-    // them, so re-encode to JPEG here. A browser that can't gets a plain
-    // instruction instead of a scan that fails with an opaque error.
+    // The server resizes every photo to 1400px anyway (MAX_EDGE in photos.js), so
+    // uploading a 12MP camera photo spends several MB of mobile data on pixels
+    // that are immediately discarded. Decode and downscale once here instead; the
+    // server still validates and re-encodes whatever arrives, and HEIC takes the
+    // same path because Safari can decode it.
+    const UPLOAD_MAX_EDGE = 1400; // keep in step with MAX_EDGE in photos.js
+    const UPLOAD_JPEG_QUALITY = 0.9;
+    const HEIC_HELP = 'This browser can’t convert that iPhone HEIC photo. On the iPhone, use Settings → Camera → Formats → Most Compatible, or export the photo as JPEG and upload that.';
+
+    const isHeicFile = (f) => /^image\/hei[cf]/i.test(f.type) || /\.(heic|heif)$/i.test(f.name);
+    // Files whose first image the server should find itself. SVG has its own guards
+    // and GIF is flattened server-side; both stay untouched. A raster the browser
+    // can't decode falls back to the original upload, so the server can still try.
+    function canResizeHere(f) {
+      if (/^image\/svg\+xml$/i.test(f.type) || /\.svg$/i.test(f.name)) return false;
+      if (/^image\/gif$/i.test(f.type) || /\.gif$/i.test(f.name)) return false;
+      return /^image\//i.test(f.type) || /\.(jpe?g|png|webp|avif|bmp|tiff?|heic|heif)$/i.test(f.name);
+    }
+
     async function normalizePhoto(f) {
-      const isHeic = /^image\/hei[cf]/i.test(f.type) || /\.(heic|heif)$/i.test(f.name);
-      if (!isHeic) return f;
+      const heic = isHeicFile(f);
+      if (!heic && !canResizeHere(f)) return f;
+      let bitmap;
       try {
-        const bitmap = await createImageBitmap(f);
-        const canvas = document.createElement('canvas');
-        canvas.width = bitmap.width; canvas.height = bitmap.height;
-        canvas.getContext('2d').drawImage(bitmap, 0, 0);
-        const blob = await new Promise((resolve, reject) =>
-          canvas.toBlob(b => (b ? resolve(b) : reject(new Error('could not re-encode'))), 'image/jpeg', 0.92));
-        return new File([blob], String(f.name || 'photo').replace(/\.(heic|heif)$/i, '') + '.jpg', { type: 'image/jpeg' });
+        bitmap = await createImageBitmap(f, { imageOrientation: 'from-image' });
       } catch {
-        throw new Error('This browser can’t convert that iPhone HEIC photo. On the iPhone, use Settings → Camera → Formats → Most Compatible, or export the photo as JPEG and upload that.');
+        if (heic) throw new Error(HEIC_HELP);
+        return f; // e.g. TIFF: the server's decoder may still read it
+      }
+      try {
+        const scale = Math.min(1, UPLOAD_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+        const width = Math.max(1, Math.round(bitmap.width * scale));
+        const height = Math.max(1, Math.round(bitmap.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        // The server flattens transparency onto white; match it here rather than
+        // letting the JPEG encoder turn transparent pixels black.
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        const blob = await new Promise((resolve, reject) =>
+          canvas.toBlob(b => (b ? resolve(b) : reject(new Error('could not re-encode'))), 'image/jpeg', UPLOAD_JPEG_QUALITY));
+        const base = String(f.name || 'photo').replace(/\.[^.]+$/, '') || 'photo';
+        return new File([blob], base + '.jpg', { type: 'image/jpeg' });
+      } catch {
+        if (heic) throw new Error(HEIC_HELP);
+        return f;
+      } finally {
+        if (bitmap.close) bitmap.close();
       }
     }
 
@@ -562,17 +595,19 @@
       btn.disabled = true; btn.textContent = 'Scanning…';
       const analysisBox = document.getElementById('analysisBox');
       analysisBox.innerHTML = skeletonAnalysis();
-      if (file && file.size > 12 * 1024 * 1024) {
-        analysisBox.innerHTML = '<div class="err">That file is ' + (file.size / 1024 / 1024).toFixed(1) +
-          ' MB — the limit is 12 MB. Try a smaller file, or a JPEG of the photo.</div>';
-        btn.disabled = false; btn.textContent = 'Scan for price';
-        return;
-      }
       let upload;
       try {
         upload = await normalizePhoto(file);
       } catch (err) {
         analysisBox.innerHTML = '<pre>' + esc(err.message) + '</pre>';
+        btn.disabled = false; btn.textContent = 'Scan for price';
+        return;
+      }
+      // After resizing, not before: a 15 MB camera photo becomes a few hundred KB
+      // and belongs under the limit, while an oversized PDF is still refused.
+      if (upload.size > 12 * 1024 * 1024) {
+        analysisBox.innerHTML = '<div class="err">That file is ' + (upload.size / 1024 / 1024).toFixed(1) +
+          ' MB — the limit is 12 MB. Try a smaller file, or a JPEG of the photo.</div>';
         btn.disabled = false; btn.textContent = 'Scan for price';
         return;
       }

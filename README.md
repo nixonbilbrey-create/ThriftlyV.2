@@ -158,6 +158,9 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   iPhone HEIC photos are re-encoded to JPEG in the browser before upload,
   because this image pipeline (`sharp`'s prebuilt libvips) has no HEVC decoder; a
   HEIC that reaches the API anyway is refused with instructions, not a vague error.
+  Every other photo is downscaled to 1400 px in the browser first too — the same
+  ceiling the server applies — so a 12 MP camera shot uploads as a few hundred KB
+  instead of several megabytes. The server still re-validates and re-encodes.
   They're served without auth over unguessable 128-bit random ids,
   since `<img>` tags can't send Bearer headers; swap in signed URLs if draft
   images ever become sensitive. Object ids survive either backend, so the
