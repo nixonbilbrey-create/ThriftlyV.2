@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 require('express-async-errors');
+const compression = require('compression');
 const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
@@ -31,7 +32,7 @@ const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail, smtpConfigured } = require('./mailer');
-const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage, MAX_PIXELS } = require('./photos');
+const { shrink, savePhoto, readPhoto, deletePhoto, thumbnail, photoIdFromThumb, storageEnabled, checkStorage, MAX_PIXELS } = require('./photos');
 const { extractImage } = require('./extract');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
@@ -112,6 +113,10 @@ app.use((req, res, next) => {
   next();
 });
 
+// Text responses (the two policy pages, theme.css, API JSON) compress to a
+// fraction of their size. Photos are already compressed and are skipped by the
+// filter; the default 1 KB threshold leaves tiny JSON alone.
+app.use(compression());
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json({ limit: '8mb' }));
 
@@ -622,14 +627,27 @@ app.post('/api/drafts/:id/generate-listing', auth, async (req, res) => {
 app.get('/api/photos/:id', async (req, res) => {
   const photo = await readPhoto(req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
-  res.set('Content-Type', photo.mimetype);
+  let body = photo.buffer;
+  let mimetype = photo.mimetype;
+  // The draft list shows 42px squares but historically downloaded the full
+  // 1400px photo for each one. `?w=96` (42px at 2x) returns a small square-ish
+  // JPEG; the URL is immutable, so the browser keeps it like the original.
+  if (req.query.w !== undefined) {
+    const raw = String(req.query.w);
+    const width = Number(raw);
+    if (!/^\d{2,3}$/.test(raw) || width < 48 || width > 640) {
+      return res.status(400).json({ error: 'Photo width must be an integer between 48 and 640' });
+    }
+    ({ buffer: body, mimetype } = await thumbnail(photo.buffer, width));
+  }
+  res.set('Content-Type', mimetype);
   // Only ever a re-encoded jpeg/png/gif/webp from this server, but state it: no
   // sniffing into something executable, no script execution if a browser opens the
   // URL directly.
   res.set('Content-Security-Policy', "default-src 'none'; sandbox");
   res.set('Content-Disposition', `inline; filename="${req.params.id}"`);
   res.set('Cache-Control', 'private, max-age=31536000, immutable'); // content never changes for a given id
-  res.send(photo.buffer);
+  res.send(body);
 });
 app.get('/api/drafts', auth, async (req, res) => res.json(await listDrafts(db, req.userId)));
 

@@ -35,6 +35,21 @@ async function shrink(buffer) {
   return { buffer: normalized, mimetype: 'image/jpeg' };
 }
 
+// Smallest useful copy for list thumbnails. 42px squares are rendered at 2x, so
+// 96px covers retina without making the list download full photos.
+const THUMB_MAX_WIDTH = 640;
+async function thumbnail(buffer, width = 96) {
+  const requested = Number(width);
+  const edge = Number.isFinite(requested) ? Math.min(THUMB_MAX_WIDTH, Math.max(48, Math.round(requested))) : 96;
+  const normalized = await sharp(buffer, { limitInputPixels: MAX_PIXELS, failOn: 'error' })
+    .rotate()
+    .flatten({ background: '#ffffff' })
+    .resize({ width: edge, withoutEnlargement: true })
+    .jpeg({ quality: 78, mozjpeg: true })
+    .toBuffer();
+  return { buffer: normalized, mimetype: 'image/jpeg' };
+}
+
 const EXT_FOR_MIME = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -249,7 +264,7 @@ async function deletePhoto(photoId) {
 }
 
 module.exports = {
-  shrink, savePhoto, putPhoto, readPhoto, deletePhoto,
+  shrink, thumbnail, savePhoto, putPhoto, readPhoto, deletePhoto,
   isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, resolveStorageCheckTtl,
   MAX_PIXELS, PHOTOS_DIR,
 };

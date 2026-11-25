@@ -723,8 +723,10 @@
         const n = Object.keys(d.listings).length;
         const posted = Object.values(d.listings).filter(l => l.posted).length;
         const status = n ? (posted + ' of ' + n + ' posted') : 'Not drafted yet';
+        // Old drafts may still hold a data: URI; only storage-backed photos can resize.
+        const thumb = /^\/api\/photos\//.test(d.thumb || '') ? d.thumb + '?w=96' : (d.thumb || '');
         return '<div class="draft-item" data-id="' + escAttr(d.id) + '">'
-          + '<img src="' + escAttr(d.thumb || '') + '" alt="">'
+          + '<img src="' + escAttr(thumb) + '" alt="" width="42" height="42" loading="lazy" decoding="async">'
           + '<div class="meta">'
           + '<div class="name">' + esc(d.analysis.item_type) + '</div>'
           + '<div class="status">' + esc(status) + '</div>'

@@ -339,7 +339,7 @@ async function photoAndDraftsFlow(token, otherToken) {
   // the API surfaces and serves it. (The scan itself needs a live Gemini key,
   // so the AI call is out of scope here.)
   const { initDb } = await import('../db.js');
-  const { savePhoto } = await import('../photos.js');
+  const { savePhoto, deletePhoto } = await import('../photos.js');
   const db = initDb(DB_PATH);
   const user = db.prepare('SELECT id FROM users WHERE email = ?').get('smoke@test.dev');
   const photo = await savePhoto(Buffer.from('smoke-photo-bytes-0123456789'), 'image/jpeg');
@@ -385,6 +385,19 @@ async function photoAndDraftsFlow(token, otherToken) {
   assert.equal(photoRes.headers.get('content-type'), 'image/jpeg');
   assert.equal(await photoRes.text(), 'smoke-photo-bytes-0123456789', 'photo bytes must round-trip');
 
+  // The draft list asks for ?w=96 instead of downloading the full photo.
+  const sharp = (await import('sharp')).default;
+  const realJpeg = await sharp({ create: { width: 800, height: 600, channels: 3, background: 'orange' } })
+    .jpeg().toBuffer();
+  const thumbPhoto = await savePhoto(realJpeg, 'image/jpeg');
+  const thumbRes = await fetch(`${BASE}${thumbPhoto.url}?w=96`);
+  assert.equal(thumbRes.status, 200, 'thumbnail must serve');
+  assert.equal(thumbRes.headers.get('content-type'), 'image/jpeg', 'thumbnail must be a jpeg');
+  const thumbMeta = await sharp(Buffer.from(await thumbRes.arrayBuffer())).metadata();
+  assert.equal(thumbMeta.width, 96, 'thumbnail must be 96px wide');
+  assert.equal((await fetch(`${BASE}${thumbPhoto.url}?w=1`)).status, 400, 'out-of-range thumb width must 400');
+  await deletePhoto(thumbPhoto.photoId);
+
   assert.equal((await fetch(`${BASE}/api/photos/ffffffffffffffffffffffffffffffff.png`)).status, 404, 'unknown photo must 404');
   assert.equal((await fetch(`${BASE}/api/photos/..%2f..%2fetc%2fpasswd`)).status, 404, 'traversal must 404');
 
@@ -411,9 +424,19 @@ async function photoAndDraftsFlow(token, otherToken) {
   assert.equal(emptyList.length, 0, 'list is empty after delete');
 }
 
+async function deliveryFlow() {
+  // The page and stylesheet ship as text; gzip is what keeps the first load
+  // small. Node's fetch decompresses for us but leaves the header visible.
+  const res = await fetch(`${BASE}/`, { headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(res.status, 200, 'home page must serve');
+  assert.equal(res.headers.get('content-encoding'), 'gzip', 'text responses must be gzipped');
+  assert.match(res.headers.get('vary') || '', /accept-encoding/i, 'compressed responses must vary by encoding');
+  assert.match(await res.text(), /Thriftly/, 'home page must still render');
+}
+
 async function resizeFlow() {
   const sharp = (await import('sharp')).default;
-  const { shrink } = await import('../photos.js');
+  const { shrink, thumbnail } = await import('../photos.js');
 
   // A large, realistically-encoded photo (2000x3000, jpeg q95)
   const big = await sharp({ create: { width: 2000, height: 3000, channels: 3, background: 'slateblue' } })
@@ -430,6 +453,12 @@ async function resizeFlow() {
   const tiny = await sharp({ create: { width: 40, height: 30, channels: 3, background: 'black' } }).jpeg().toBuffer();
   const smallMeta = await sharp((await shrink(tiny)).buffer).metadata();
   assert.equal(smallMeta.width, 40, 'shrink must not upscale a small photo');
+
+  // list thumbnails are a fraction of the full photo, not just CSS-shrunk
+  const thumb = await thumbnail(out.buffer, 96);
+  const thumbMeta = await sharp(thumb.buffer).metadata();
+  assert.equal(thumbMeta.width, 96, 'thumbnail must honor the requested width');
+  assert.ok(thumb.buffer.length < out.buffer.length, 'thumbnail must be smaller than the full photo');
 
   // undecodable upload is rejected (server turns it into a 400)
   await assert.rejects(
@@ -801,6 +830,9 @@ try {
   const t25 = Date.now();
   await resizeFlow();
   console.log(`  ok   photo resize/compress (${Date.now() - t25}ms)`);
+  const tDel = Date.now();
+  await deliveryFlow();
+  console.log(`  ok   gzip delivery (${Date.now() - tDel}ms)`);
   const tAbs = Date.now();
   await accountDeleteFlow();
   console.log(`  ok   account deletion (${Date.now() - tAbs}ms)`);
