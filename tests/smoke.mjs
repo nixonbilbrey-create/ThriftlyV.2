@@ -49,6 +49,9 @@ function startServer() {
       BASE_URL: `http://127.0.0.1:${PORT}`,
       // No SMTP in tests → the dev fallback returns links in API responses,
       // which is how the tests reach verify/reset URLs without a mailbox.
+      // Asked for explicitly: with no relay the app would otherwise skip the gate
+      // (see verificationModeFlow below).
+      REQUIRE_EMAIL_VERIFICATION: 'true',
     },
     stdio: 'ignore',
   });
@@ -646,56 +649,76 @@ async function bootInstance(port, dbName, extraEnv = {}) {
   return { child, base };
 }
 
-// REQUIRE_EMAIL_VERIFICATION=false exists for instances with no mail relay. It must
-// mean a session at signup — not a 201 followed by a login that refuses — and it
-// must stay opt-in, so the same flow is run against a default instance and gated.
-async function verificationOptOutFlow() {
-  const off = await bootInstance(3132, 'noverify.db', { REQUIRE_EMAIL_VERIFICATION: 'false' });
-  const on = await bootInstance(3133, 'verify-on.db');
+// Verification follows reality when the flag is unset: with no mail relay no link can
+// ever arrive, so requiring one would lock every new account out of an app that has no
+// way to reach them. Both explicit settings must still beat that guess, either way.
+async function verificationModeFlow() {
+  const auto = await bootInstance(3132, 'noverify.db'); // no SMTP, flag unset
+  const gated = await bootInstance(3133, 'verify-on.db', { REQUIRE_EMAIL_VERIFICATION: 'true' });
+  const forcedOff = await bootInstance(3134, 'verify-off.db', {
+    REQUIRE_EMAIL_VERIFICATION: 'false', SMTP_HOST: '127.0.0.1', SMTP_PORT: '2525',
+  });
   try {
+    // ---------- unset + no relay: the account works straight away ----------
+    const autoCfg = await json(await fetch(`${auto.base}/api/config`));
+    assert.equal(autoCfg.requiresEmailVerification, false, 'the instance must admit it does not gate on email');
+
     const email = 'noverify@test.dev';
-    const signup = await fetch(`${off.base}/api/auth/signup`, {
+    const signup = await fetch(`${auto.base}/api/auth/signup`, {
       method: 'POST', headers: plainHeaders,
       body: JSON.stringify({ email, password: 'noverify-pass-1', agree: true }),
     });
-    assert.equal(signup.status, 201, 'signup succeeds on the no-verification instance');
+    assert.equal(signup.status, 201, 'signup succeeds');
     const created = await json(signup);
     assert.match(created.token || '', /^[a-f0-9]{64}$/, 'signup hands back a session instead of an inbox errand');
     assert.equal(created.user.emailVerified, true, 'and the account is not left half-created');
-    assert.equal(created.devVerifyLink, undefined, 'no useless verification link is produced');
+    assert.equal(created.devVerifyLink, undefined, 'no undeliverable verification link is produced');
 
-    const me = await json(await fetch(`${off.base}/api/auth/me`, { headers: authHeaders(created.token) }));
+    const me = await json(await fetch(`${auto.base}/api/auth/me`, { headers: authHeaders(created.token) }));
     assert.equal(me.email, email, 'the session works immediately');
-    const drafts = await json(await fetch(`${off.base}/api/drafts`, { headers: authHeaders(created.token) }));
+    const drafts = await json(await fetch(`${auto.base}/api/drafts`, { headers: authHeaders(created.token) }));
     assert.ok(Array.isArray(drafts), 'and the app behind it is open, not just the auth endpoints');
 
-    const login = await fetch(`${off.base}/api/auth/login`, {
+    const login = await fetch(`${auto.base}/api/auth/login`, {
       method: 'POST', headers: plainHeaders,
       body: JSON.stringify({ email, password: 'noverify-pass-1' }),
     });
     assert.equal(login.status, 200, 'later logins need no verification step either');
 
-    const resend = await fetch(`${off.base}/api/auth/resend-verification`, {
+    const resend = await fetch(`${auto.base}/api/auth/resend-verification`, {
       method: 'POST', headers: plainHeaders, body: JSON.stringify({ email }),
     });
     assert.equal(resend.status, 400, 'resend says verification is off rather than pretending to send');
 
-    // The flag is opt-in: a default instance must still withhold the session.
+    // ---------- explicit true: the gate is back, even with no relay ----------
+    const gatedCfg = await json(await fetch(`${gated.base}/api/config`));
+    assert.equal(gatedCfg.requiresEmailVerification, true, 'an explicit true must be honoured');
     const gatedEmail = 'still-gated@test.dev';
-    const created2 = await json(await fetch(`${on.base}/api/auth/signup`, {
+    const created2 = await json(await fetch(`${gated.base}/api/auth/signup`, {
       method: 'POST', headers: plainHeaders,
       body: JSON.stringify({ email: gatedEmail, password: 'still-gated-1', agree: true }),
     }));
-    assert.equal(created2.token, undefined, 'without the flag, signup still withholds the session');
-    const refused = await fetch(`${on.base}/api/auth/login`, {
+    assert.equal(created2.token, undefined, 'an explicitly gated instance still withholds the session');
+    assert.ok(created2.devVerifyLink, 'and still offers the dev link, since no mail can be sent');
+    const refused = await fetch(`${gated.base}/api/auth/login`, {
       method: 'POST', headers: plainHeaders,
       body: JSON.stringify({ email: gatedEmail, password: 'still-gated-1' }),
     });
-    assert.equal(refused.status, 403, 'and login still refuses an unverified account');
+    assert.equal(refused.status, 403, 'login refuses an unverified account there');
     assert.equal((await json(refused)).needsVerification, true, 'telling the UI to offer a resend');
+
+    // ---------- explicit false: still off when a relay *is* configured ----------
+    const forcedCfg = await json(await fetch(`${forcedOff.base}/api/config`));
+    assert.equal(forcedCfg.requiresEmailVerification, false, 'an explicit false must beat a configured relay');
+    const created3 = await json(await fetch(`${forcedOff.base}/api/auth/signup`, {
+      method: 'POST', headers: plainHeaders,
+      body: JSON.stringify({ email: 'forced-off@test.dev', password: 'forced-off-1', agree: true }),
+    }));
+    assert.match(created3.token || '', /^[a-f0-9]{64}$/, 'so signup there signs in even though SMTP exists');
   } finally {
-    off.child.kill('SIGTERM');
-    on.child.kill('SIGTERM');
+    auto.child.kill('SIGTERM');
+    gated.child.kill('SIGTERM');
+    forcedOff.child.kill('SIGTERM');
     await sleep(300);
   }
 }
@@ -758,8 +781,8 @@ try {
   encryptionKeyGuardFlow();
   console.log(`  ok   ENCRYPTION_KEY must be hex, not just 64 characters (${Date.now() - tKey}ms)`);
   const tNoVerify = Date.now();
-  await verificationOptOutFlow();
-  console.log(`  ok   REQUIRE_EMAIL_VERIFICATION=false signs up without email, default still gates (${Date.now() - tNoVerify}ms)`);
+  await verificationModeFlow();
+  console.log(`  ok   no mail relay signs up without email; explicit on/off still win (${Date.now() - tNoVerify}ms)`);
   const t3 = Date.now();
   await limiterChecks();
   console.log(`  ok   rate limiting (${Date.now() - t3}ms)`);

@@ -129,4 +129,4 @@ async function sendPasswordResetEmail(email, resetUrl) {
   return { sent: true };
 }
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail };
+module.exports = { sendVerificationEmail, sendPasswordResetEmail, smtpConfigured };

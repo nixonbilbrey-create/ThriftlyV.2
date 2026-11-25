@@ -30,7 +30,7 @@ const {
 const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
-const { sendVerificationEmail, sendPasswordResetEmail } = require('./mailer');
+const { sendVerificationEmail, sendPasswordResetEmail, smtpConfigured } = require('./mailer');
 const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage, looksLikeHeic } = require('./photos');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
@@ -46,13 +46,20 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 // turn it off explicitly (REQUIRE_EMAIL_VERIFICATION=false); accounts are then
 // usable immediately. Only an explicit false disables it: a typo or a missing var
 // must leave the gate on.
-const REQUIRE_EMAIL_VERIFICATION = !['0', 'false', 'no', 'off'].includes(
-  String(process.env.REQUIRE_EMAIL_VERIFICATION ?? 'true').trim().toLowerCase()
-);
+const REQUIRE_EMAIL_VERIFICATION = (() => {
+  const flag = String(process.env.REQUIRE_EMAIL_VERIFICATION ?? '').trim().toLowerCase();
+  if (flag) return !['0', 'false', 'no', 'off'].includes(flag);
+  // Unset: follow reality. Requiring verification on a host with no mail relay is a
+  // guaranteed lockout — the link exists only in the server log, so every account it
+  // creates is unusable. With SMTP configured the gate comes back on its own.
+  return smtpConfigured();
+})();
 
-if (!REQUIRE_EMAIL_VERIFICATION) {
-  console.warn('[startup] REQUIRE_EMAIL_VERIFICATION=false — signup issues a session immediately, so nobody has to prove they own their email address');
-}
+// Say which mode is live and why — otherwise the only way to learn it is to trip
+// over a "verify your email" wall and go reading code.
+console.log(REQUIRE_EMAIL_VERIFICATION
+  ? '[startup] email verification ON — signup must confirm the address before logging in'
+  : '[startup] email verification OFF — no mail relay is configured, so signup signs people in immediately (a link could never reach them)');
 
 // Must match the version rendered in public/privacy.html: the smoke test fails if
 // the served page and this constant disagree. Bump both together — every signup
@@ -233,7 +240,12 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
-app.get('/api/config', (req, res) => res.json({ turnstileSiteKey: TURNSTILE_SITE_KEY || null, privacyVersion: PRIVACY_VERSION }));
+app.get('/api/config', (req, res) => res.json({
+  turnstileSiteKey: TURNSTILE_SITE_KEY || null,
+  privacyVersion: PRIVACY_VERSION,
+  // Lets anyone (you, support, CI) see whether this instance gates on email at all.
+  requiresEmailVerification: REQUIRE_EMAIL_VERIFICATION,
+}));
 
 async function verifyCaptcha(token, remoteip) {
   if (!TURNSTILE_SECRET) return { ok: true }; // not configured — dev / tests

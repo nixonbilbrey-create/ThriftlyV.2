@@ -318,6 +318,9 @@ function startApp(storage, gemini) {
       GEMINI_MODEL: 'gemini-3.5-flash',
       GEMINI_MODEL_FALLBACKS: 'gemini-3.6-flash,gemini-flash-latest',
       SMTP_HOST: '',
+      // This suite drives the verification flow on purpose (it signs up through the
+      // dev link); with no relay the app would otherwise skip the gate.
+      REQUIRE_EMAIL_VERIFICATION: 'true',
       TURNSTILE_SITE_KEY: '',
       TURNSTILE_SECRET: '',
       NODE_ENV: 'test',
