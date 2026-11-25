@@ -31,7 +31,7 @@ const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail, smtpConfigured } = require('./mailer');
-const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage } = require('./photos');
+const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage, MAX_PIXELS } = require('./photos');
 const { extractImage } = require('./extract');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
@@ -515,6 +515,26 @@ function usersGeminiKey(user) {
 
 // ============ THE REAL PIPELINE ============
 
+// Turn an extractImage() reason into the sentence a person needs. Naming the file
+// is what stops "it didn't work" from becoming a support message.
+function extractRejection(reason, originalName) {
+  const named = originalName ? ` "${originalName}"` : '';
+  switch (reason) {
+    case 'legacy':
+      return `That looks like an older Office file (Word/Excel 97-2003)${named}. Save it as .docx or .xlsx, or export it as a PDF, and try again.`;
+    case 'executable':
+      return `That's a program, not a photo${named}. Thriftly only accepts images, or documents that contain one.`;
+    case 'too-large':
+      return `That image is too large to process${named}. Thriftly caps images at ${MAX_PIXELS / 1000000} megapixels — resize it and try again.`;
+    case 'unsafe-svg':
+      return `That SVG references something outside itself${named}, so it isn't accepted. Open it, export a PNG or JPEG, and upload that.`;
+    case 'unreadable':
+      return `Thriftly found something image-like in${named || ' that file'} but couldn't read it. Try a JPEG or PNG of it.`;
+    default:
+      return `No image found in${named || ' that file'}. Thriftly needs a photo — upload one directly, or a PDF, Word, PowerPoint, Excel, OpenDocument, EPUB or zip file that contains one.`;
+  }
+}
+
 // Photo in -> identify + price it (using THIS user's own Gemini key) -> save as a new draft
 app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res) => {
   try {
@@ -535,21 +555,7 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
     // the HEIC instruction instead of a generic type complaint.
     const found = await extractImage(req.file.buffer);
     if (!found.ok && found.reason === 'heic') return res.status(415).json({ error: heicMessage });
-    if (!found.ok) {
-      const named = req.file.originalname ? ` "${req.file.originalname}"` : '';
-      const error = found.reason === 'legacy'
-        ? `That looks like an older Office file (Word/Excel 97-2003)${named}. Save it as .docx or .xlsx, or export it as a PDF, and try again.`
-        : found.reason === 'executable'
-          ? `That's a program, not a photo${named}. Thriftly only accepts images, or documents that contain one.`
-          : found.reason === 'too-large'
-            ? `That image is too large to process${named}. Thriftly caps images at 40 megapixels — resize it and try again.`
-            : found.reason === 'unsafe-svg'
-              ? `That SVG loads other files or scripts${named}, so it isn't accepted. Open it, export a PNG or JPEG, and upload that.`
-              : found.reason === 'unreadable'
-                ? `Thriftly found something image-like in${named || ' that file'} but couldn't read it. Try a JPEG or PNG of it.`
-                : `No image found in${named || ' that file'}. Thriftly needs a photo — upload one directly, or a PDF, Word, PowerPoint, Excel, OpenDocument, EPUB or zip file that contains one.`;
-      return res.status(415).json({ error });
-    }
+    if (!found.ok) return res.status(415).json({ error: extractRejection(found.reason, req.file.originalname) });
 
     // One resize pass serves both consumers: the (smaller) same image goes to
     // Gemini and to disk. The original file is never stored.

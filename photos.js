@@ -17,11 +17,11 @@ const MAX_EDGE = 1400; // px, longest edge after resizing
 const JPEG_QUALITY = 82;
 // Ceiling on what a decoder is allowed to allocate: a 1400px cap only applies
 // after the full image has been decoded, so a 200-megapixel header would be a
-// memory bomb otherwise. Kept in step with extract.js.
-const MAX_INPUT_PIXELS = 40 * 1000 * 1000;
+// memory bomb otherwise. extract.js shares this number rather than keeping its own.
+const MAX_PIXELS = 40 * 1000 * 1000;
 
 async function shrink(buffer) {
-  const normalized = await sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS, failOn: 'error' })
+  const normalized = await sharp(buffer, { limitInputPixels: MAX_PIXELS, failOn: 'error' })
     .rotate() // auto-applies EXIF orientation so sideways phone photos stay upright
     .flatten({ background: '#ffffff' }) // transparent PNGs get paper, not black
     .resize({
@@ -197,19 +197,6 @@ async function savePhoto(buffer, mimetype) {
   return { photoId, url: `/api/photos/${photoId}` };
 }
 
-// HEIC is what iPhones shoot by default. This sharp build has libheif for AVIF
-// only — hevc decoding is absent (verified: heifsave reports "Unsupported
-// compression: hevc"), so a HEIC buffer cannot be processed here at all. Sniffing
-// the ISOBMFF brand lets the app say that plainly instead of surfacing a generic
-// "couldn't read that image".
-const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
-function looksLikeHeic(buffer) {
-  if (!buffer || buffer.length < 12) return false;
-  if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
-  const brand = buffer.toString('ascii', 8, 12).toLowerCase();
-  return brand !== 'avif' && HEIF_BRANDS.has(brand);
-}
-
 function isValidPhotoId(photoId) {
   return typeof photoId === 'string' && PHOTO_ID_RE.test(photoId);
 }
@@ -264,5 +251,5 @@ async function deletePhoto(photoId) {
 module.exports = {
   shrink, savePhoto, putPhoto, readPhoto, deletePhoto,
   isValidPhotoId, photoIdFromThumb, storageEnabled, checkStorage, resolveStorageCheckTtl,
-  looksLikeHeic, PHOTOS_DIR,
+  MAX_PIXELS, PHOTOS_DIR,
 };

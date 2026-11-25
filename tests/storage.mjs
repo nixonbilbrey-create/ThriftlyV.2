@@ -656,6 +656,22 @@ async function heicRejectionFlow(token) {
   assert.equal(await draftCount(), before, 'a refused upload leaves no draft behind');
 }
 
+// A JPEG whose header claims 12000x12000 (144 megapixels): under sharp's own
+// hard limit, over Thriftly's 40, and cheap because no such image is ever encoded.
+function oversizedJpeg(jpeg) {
+  const buffer = Buffer.from(jpeg);
+  for (let i = 2; i + 9 < buffer.length; i++) {
+    if (buffer[i] !== 0xff) continue;
+    const marker = buffer[i + 1];
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      buffer.writeUInt16BE(12000, i + 5);
+      buffer.writeUInt16BE(12000, i + 7);
+      return buffer;
+    }
+  }
+  throw new Error('test image has no SOF marker');
+}
+
 // ---------- hostile input ----------
 // The upload path takes arbitrary files, so each one is treated as hostile:
 // programs renamed as images, archives claiming huge members, malformed
@@ -709,6 +725,21 @@ async function maliciousUploadFlow(token) {
   } finally {
     await new Promise((resolve) => leak.close(resolve));
   }
+
+
+  // Pixel bombs are judged from the header alone, whether the image is the upload
+  // itself or hiding inside a PDF.
+  const pixelSource = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#884466' } }).jpeg().toBuffer();
+  const hugeJpeg = oversizedJpeg(pixelSource);
+  const hugeDirect = await upload(hugeJpeg, 'image/jpeg', 'huge.jpg');
+  assert.equal(hugeDirect.res.status, 415, 'a 144-megapixel JPEG is refused');
+  assert.match(hugeDirect.body.error || '', /too large|40 megapixels/i, 'and says the size is the problem');
+  const hugePdf = await upload(
+    Buffer.concat([Buffer.from('%PDF-1.4\nstream\n'), hugeJpeg, Buffer.from('\nendstream\n%%EOF\n')]),
+    'application/pdf', 'huge.pdf',
+  );
+  assert.equal(hugePdf.res.status, 415, 'the same image inside a PDF is refused too');
+  assert.match(hugePdf.body.error || '', /too large|40 megapixels/i, 'with the same size explanation');
 
   // The size limit is enforced before the body reaches the route.
   const oversized = await upload(Buffer.alloc(13 * 1024 * 1024), 'image/jpeg', 'big.jpg');
