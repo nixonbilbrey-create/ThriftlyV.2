@@ -156,6 +156,26 @@ async function authAndVerifyFlow() {
   const policyPage = await (await fetch(`${BASE}/privacy.html`)).text();
   assert.ok(policyPage.includes(me.policyVersion), 'served policy page version must match the recorded consent version');
 
+  // The free-tier Gemini disclosure is the legally load-bearing part of this page:
+  // Google may train on submitted photos/text, and humans may read them. Check the
+  // words, not just the version badge, so a rewrite can't keep the version and drop
+  // the disclosure. Tags are stripped so <b> and paragraph splits don't matter.
+  const policyText = policyPage
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[a-z]+;/gi, ' ')
+    .replace(/\s+/g, ' ');
+  assert.match(
+    policyText,
+    /free tier[\s\S]{0,600}photos and text[\s\S]{0,400}(?:improve|develop)[\s\S]{0,160}(?:models|products)/i,
+    'free-tier policy must disclose that Google may use submitted photos and text to improve its models',
+  );
+  assert.match(
+    policyText,
+    /human reviewers may read/i,
+    'free-tier policy must disclose that human reviewers may read submitted content',
+  );
+
   // launch surface: terms page exists, health exposes liveness only (no paths).
   const termsPage = await (await fetch(`${BASE}/terms.html`)).text();
   assert.match(termsPage, /Terms of Service/, 'served terms page must exist');
