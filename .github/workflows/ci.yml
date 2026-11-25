@@ -123,7 +123,11 @@ jobs:
             -e SUPABASE_URL='http://127.0.0.1:9191' \
             -e SUPABASE_SERVICE_ROLE_KEY='ci-not-a-real-key' \
             -e BASE_URL='http://127.0.0.1:10000' \
+            -e REQUIRE_EMAIL_VERIFICATION='true' \
             thriftly:ci
+          # Verification asked for explicitly: this container has no SMTP relay, so
+          # the app would otherwise skip the gate and the signup step below — which
+          # proves the emailed link path end to end — would have nothing to follow.
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:10000/api/ready > ready.json; then
               echo "ready after ${i}s: $(cat ready.json)"
