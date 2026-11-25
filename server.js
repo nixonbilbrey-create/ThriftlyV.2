@@ -216,9 +216,14 @@ function sendError(res, err) {
   console.error(err);
   // 5xx means something blew up server-side (Gemini outage, unexpected crash) —
   // the full error lives in the server log only; the client gets a generic line
-  // so internals never leak. 4xx errors are user-actionable by contract:
-  // message/detail/raw come straight through so the harness and real pages can
-  // show exactly what went wrong with the user's own input or key.
+  // so internals never leak. Deliberate upstream timeouts carry a safe public
+  // message so the user knows to retry instead of seeing a bare 5xx.
+  if (err.publicMessage) {
+    return res.status(err.status || 500).json({ error: err.publicMessage });
+  }
+  // 4xx errors are user-actionable by contract: message/detail/raw come straight
+  // through so the harness and real pages can show exactly what went wrong with
+  // the user's own input or key.
   if ((err.status || 500) >= 500) {
     return res.status(err.status || 500).json({ error: 'Something went wrong — try again in a moment' });
   }
@@ -585,7 +590,6 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
     try {
       analysis = await callGeminiJSON({
         apiKey, system: ANALYZE_SYSTEM_PROMPT, parts: analyzeParts(base64, normalized.mimetype),
-        thinkingLevel: 'low',
       });
     } catch (err) {
       // If the model fails but the upload succeeded, remove the orphan before

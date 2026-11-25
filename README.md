@@ -192,6 +192,7 @@ image):
 | `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | for real email | Relay credentials + verified sender address |
 | `REQUIRE_EMAIL_VERIFICATION` | optional | Overrides a default that follows SMTP: unset, the gate is on when `SMTP_HOST` is set and off when it isn't (a link that can never be delivered would lock every new account out). `true` requires it regardless; `false` skips it regardless and weakens signup abuse protection |
 | `GEMINI_MODEL` | optional | Model override (default `gemini-3.8-flash`). If Google retires it, `GEMINI_MODEL_FALLBACKS` are tried in order and the winner is reused |
+| `GEMINI_TIMEOUT_MS` | optional | Deadline for each Gemini call (default `30000`, max `120000`). A stalled request becomes a clear 504 instead of a spinner that never ends |
 | `GEMINI_API_BASE` | tests only | Points the client at a local fake. Ignored in production, where the server refuses to start if it is set — keys only go to Google |
 | `DB_PATH` / `PHOTOS_DIR` | optional | Overrides for the on-disk locations |
 | `TURNSTILE_SITE_KEY` | optional | Cloudflare Turnstile site key — renders the signup CAPTCHA widget |

@@ -164,19 +164,36 @@ function ensureDir() {
   fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 }
 
+// Uploads are small (the image is resized to 1400px before this), so a storage
+// round trip that takes longer than this is a stalled connection, not slowness.
+// Without the cap a scan waits on it forever after Gemini has already answered.
+const STORAGE_TIMEOUT_MS = 15000;
+
 async function storageRequest(photoId, options = {}) {
   const config = storageConfig();
   if (!config) throw new Error('Supabase Storage is not configured');
-  const response = await fetch(
-    `${config.url}/storage/v1/object/${encodeURIComponent(config.bucket)}/${encodeURIComponent(photoId)}`,
-    {
-      ...options,
-      headers: {
-        authorization: `Bearer ${config.key}`,
-        ...(options.headers || {}),
+  let response;
+  try {
+    response = await fetch(
+      `${config.url}/storage/v1/object/${encodeURIComponent(config.bucket)}/${encodeURIComponent(photoId)}`,
+      {
+        ...options,
+        signal: AbortSignal.timeout(STORAGE_TIMEOUT_MS),
+        headers: {
+          authorization: `Bearer ${config.key}`,
+          ...(options.headers || {}),
+        },
       },
-    },
-  );
+    );
+  } catch (err) {
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      const timeout = new Error(`Supabase Storage did not respond within ${STORAGE_TIMEOUT_MS / 1000}s`);
+      timeout.status = 504;
+      timeout.publicMessage = 'Photo storage took too long to respond — try again in a moment.';
+      throw timeout;
+    }
+    throw err;
+  }
   return response;
 }
 

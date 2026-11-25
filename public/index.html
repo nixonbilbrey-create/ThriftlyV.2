@@ -640,8 +640,13 @@
       }
       const fd = new FormData();
       fd.append('photo', upload);
+      // The server bounds Gemini at 30s; this is the last line of defence for a
+      // proxy or network stall, so the button can never spin forever.
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeoutTimer = setTimeout(() => { timedOut = true; controller.abort(); }, 45000);
       try {
-        const res = await api('/api/scan', { method: 'POST', body: fd });
+        const res = await api('/api/scan', { method: 'POST', body: fd, signal: controller.signal });
         const data = await res.json();
         if (!res.ok) {
           analysisBox.innerHTML = data.error
@@ -654,8 +659,11 @@
         renderListings();
         loadDraftList();
       } catch (err) {
-        analysisBox.innerHTML = '<pre>Request failed: ' + esc(String(err)) + '</pre>';
+        analysisBox.innerHTML = '<pre>' + (timedOut
+          ? 'Scan took too long — Gemini may be busy. Try again in a moment.'
+          : 'Request failed: ' + esc(String(err))) + '</pre>';
       } finally {
+        clearTimeout(timeoutTimer);
         btn.disabled = false; btn.textContent = 'Scan for price';
       }
     });

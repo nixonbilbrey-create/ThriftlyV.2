@@ -157,6 +157,7 @@ function startFakeStorage() {
 // generateContent (the analysis behind /api/scan).
 function startFakeGemini() {
   const requests = [];
+  let hanging = false;
   const analysis = {
     item_type: 'wool scarf',
     brand: 'Acme',
@@ -186,12 +187,23 @@ function startFakeGemini() {
         thinking: body?.generationConfig?.thinkingConfig || null,
       });
 
+      if (req.method === 'POST' && req.url === '/__control/hang') {
+        hanging = true;
+        res.writeHead(204);
+        return res.end();
+      }
+      if (req.method === 'POST' && req.url === '/__control/resume') {
+        hanging = false;
+        res.writeHead(204);
+        return res.end();
+      }
       if (req.method === 'GET' && req.url === '/v1beta/models') {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ models: [{ name: 'models/test-model' }] }));
       }
       const generate = /^\/v1beta\/models\/([^/:]+):generateContent$/.exec(req.url);
       if (req.method === 'POST' && generate) {
+        if (hanging) return; // accepted, but deliberately never answer
         const model = generate[1];
         if (RETIRED_MODELS.has(model)) {
           res.writeHead(404, { 'content-type': 'application/json' });
@@ -432,6 +444,8 @@ function startApp(storage, gemini) {
       // Deliberately a retired ID: every scan in this suite then has to fall back.
       GEMINI_MODEL: 'gemini-3.5-flash',
       GEMINI_MODEL_FALLBACKS: 'gemini-3.6-flash,gemini-flash-latest',
+      // Keep the stalled-Gemini test fast; the production default is 30s.
+      GEMINI_TIMEOUT_MS: '500',
       SMTP_HOST: '',
       // This suite drives the verification flow on purpose (it signs up through the
       // dev link); with no relay the app would otherwise skip the gate.
@@ -525,10 +539,10 @@ async function apiFlows(storage, gemini) {
     'a retired model id falls back to the next candidate instead of failing the scan',
   );
   const fallbackCall = gemini.requests.find((r) => r.path === '/v1beta/models/gemini-3.6-flash:generateContent');
-  assert.deepEqual(
+  assert.equal(
     fallbackCall.thinking,
-    { thinkingLevel: 'low' },
-    'scan asks Gemini for low thinking to cut latency',
+    null,
+    'scan does not send thinkingConfig — structured output plus thinking has hung upstream',
   );
 
   // ---- serving reads back from Storage ----
@@ -563,6 +577,29 @@ async function apiFlows(storage, gemini) {
   );
   assert.equal((await fetch(`${BASE}${draft.thumb}`)).status, 404, 'the deleted photo no longer serves');
   return { token, jpeg };
+}
+
+// ---------- a Gemini request that never answers ----------
+// The fake accepts the connection and then sends nothing, which is exactly what
+// 3.8 Flash has done under load. The scan must hit its deadline, return a clear
+// 504, and delete the photo it started uploading alongside the model call.
+async function stalledGeminiFlow(storage, gemini, token, jpeg) {
+  await fetch(`${gemini.url}/__control/hang`, { method: 'POST' });
+  const objectsBefore = storage.objects.size;
+  const started = Date.now();
+  try {
+    const res = await fetch(`${BASE}/api/scan`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}` }, body: photoForm(jpeg),
+    });
+    const elapsed = Date.now() - started;
+    const body = await json(res);
+    assert.equal(res.status, 504, `a stalled Gemini must time out -> ${res.status} ${JSON.stringify(body)}`);
+    assert.match(body.error || '', /too long/i, 'the client is told to retry instead of being left to spin');
+    assert.ok(elapsed < 5000, `the timeout must be bounded (took ${elapsed}ms)`);
+    assert.equal(storage.objects.size, objectsBefore, 'the upload that raced the model call is cleaned up');
+  } finally {
+    await fetch(`${gemini.url}/__control/resume`, { method: 'POST' });
+  }
 }
 
 // ---------- readiness proves the bucket, not just the env vars ----------
@@ -995,6 +1032,10 @@ try {
   await waitForServer(child);
   const { token, jpeg } = await apiFlows(storage, gemini);
   console.log(`  ok   scan → upload → serve → export → draft delete (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await stalledGeminiFlow(storage, gemini, token, jpeg);
+  console.log(`  ok   scan fails fast when Gemini stalls (${Date.now() - step}ms)`);
 
   step = Date.now();
   await heicRejectionFlow(token);

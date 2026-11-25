@@ -20,10 +20,40 @@ const API_BASE = (process.env.NODE_ENV === 'production'
   ? DEFAULT_API_BASE
   : (process.env.GEMINI_API_BASE || DEFAULT_API_BASE)).replace(/\/+$/, '');
 
+// Gemini can accept a request and then never send response headers — reported
+// repeatedly on 3.8 Flash under load, and with structured output plus thinking
+// during earlier incidents. Without a deadline the scan request (and the browser
+// spinner waiting on it) never resolves, so cap every call and fail with a
+// retryable message instead. Tests lower this to keep the suite fast.
+const GEMINI_TIMEOUT_MS = (() => {
+  const configured = Number(process.env.GEMINI_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 500 ? Math.min(configured, 120000) : 30000;
+})();
+
+async function fetchGemini(url, options, timeoutMs, publicMessage) {
+  try {
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      const timeout = new Error(`Gemini did not respond within ${Math.round(timeoutMs / 1000)}s`);
+      timeout.status = 504;
+      timeout.code = 'GEMINI_TIMEOUT';
+      timeout.publicMessage = publicMessage;
+      throw timeout;
+    }
+    throw err;
+  }
+}
+
 // Cheap validation call — lists models instead of generating anything, so connecting
 // a key doesn't cost the user any generation quota.
 async function testGeminiKey(apiKey) {
-  const res = await fetch(`${API_BASE}/models`, { headers: { 'x-goog-api-key': apiKey } });
+  const res = await fetchGemini(
+    `${API_BASE}/models`,
+    { headers: { 'x-goog-api-key': apiKey } },
+    Math.min(GEMINI_TIMEOUT_MS, 15000),
+    'Gemini did not respond while checking this key — try again in a moment.',
+  );
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
     const err = new Error('Gemini rejected this key');
@@ -69,16 +99,12 @@ function parseModelJSON(data) {
   }
 }
 
-// Gemini 3.8 Flash defaults to medium thinking. Low is the documented
-// latency-minimizing level and is enough for photo identification and pricing;
-// older/aliased models don't accept the field, so only send it where it applies.
-const THINKING_LEVELS = new Set(['low', 'medium', 'high']);
-function supportsThinkingLevel(model) {
-  return /^gemini-(3|4)(?:[.-]|$)/i.test(String(model));
-}
-
 // Calls generateContent with the given user's key, forcing JSON output, and parses it.
-async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800, thinkingLevel }) {
+// Thinking is left at the model default: the structured-output + thinkingConfig
+// combination has a documented history of hanging with zero response bytes, and
+// latency is already bounded by the request timeout. maxTokens has to cover
+// thinking plus the visible JSON, so it is deliberately above the old 800.
+async function callGeminiJSON({ apiKey, system, parts, maxTokens = 4096 }) {
   if (!apiKey) {
     const err = new Error('No Gemini API key connected — add one in Settings first');
     err.status = 400;
@@ -87,19 +113,20 @@ async function callGeminiJSON({ apiKey, system, parts, maxTokens = 800, thinking
 
   let lastError = null;
   for (const model of modelCandidates()) {
-    const generationConfig = { responseMimeType: 'application/json', maxOutputTokens: maxTokens };
-    if (thinkingLevel && THINKING_LEVELS.has(thinkingLevel) && supportsThinkingLevel(model)) {
-      generationConfig.thinkingConfig = { thinkingLevel };
-    }
-    const res = await fetch(`${API_BASE}/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ parts }],
-        generationConfig,
-      }),
-    });
+    const res = await fetchGemini(
+      `${API_BASE}/models/${model}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ parts }],
+          generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens },
+        }),
+      },
+      GEMINI_TIMEOUT_MS,
+      'Gemini is taking too long to respond — it may be busy, so try again in a moment.',
+    );
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
@@ -184,6 +211,6 @@ function listingParts(analysis) {
 }
 
 module.exports = {
-  PLATFORMS, MODEL, MODEL_FALLBACKS, API_BASE, testGeminiKey, callGeminiJSON, modelCandidates, supportsThinkingLevel,
+  PLATFORMS, MODEL, MODEL_FALLBACKS, API_BASE, GEMINI_TIMEOUT_MS, testGeminiKey, callGeminiJSON, modelCandidates,
   ANALYZE_SYSTEM_PROMPT, LISTING_SYSTEM_PROMPT, analyzeParts, listingParts,
 };
