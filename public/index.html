@@ -31,7 +31,10 @@
           <div class="seg-item" data-mode="signup">Sign up</div>
         </div>
         <input id="email" type="email" placeholder="Email address" autocomplete="email">
-        <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+        <div class="field">
+          <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+          <button type="button" class="reveal" id="togglePassword" aria-controls="password" aria-pressed="false">Show</button>
+        </div>
         <label id="agreeRow" class="check" style="display:none;">
           <input type="checkbox" id="agree">
           <span>I agree to the <a class="link" href="/privacy.html" target="_blank">Privacy Policy</a> and <a class="link" href="/terms.html" target="_blank">Terms of Service</a>.</span>
@@ -183,6 +186,19 @@
     }
     document.querySelectorAll('#authSeg .seg-item').forEach(el => {
       el.addEventListener('click', () => setAuthMode(el.dataset.mode));
+    });
+
+    // Always-visible reveal. A password you can't check is the commonest signup
+    // mistake, so this is a permanent chip inside the field — not a hover-only eye
+    // that vanishes on touch screens or while the field is empty.
+    const passwordInput = document.getElementById('password');
+    const togglePassword = document.getElementById('togglePassword');
+    togglePassword.addEventListener('click', () => {
+      const hidden = passwordInput.type === 'password';
+      passwordInput.type = hidden ? 'text' : 'password';
+      togglePassword.textContent = hidden ? 'Hide' : 'Show';
+      togglePassword.setAttribute('aria-pressed', String(hidden));
+      passwordInput.focus();
     });
 
     function showDevLink(link, label) {

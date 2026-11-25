@@ -110,6 +110,18 @@ label.check{
   font-size:12.5px;line-height:1.5;color:var(--muted);margin:2px 0 12px;
 }
 
+/* A password field with its own reveal chip. The chip sits inside the field and is
+   always on screen: no hover, no focus, no icon-only affordance to miss. */
+.field{position:relative;}
+.field input{padding-right:92px;}
+.field .reveal{
+  position:absolute;top:5px;right:6px;
+  min-height:36px;padding:6px 14px;
+  font-size:12px;border-radius:999px;
+  box-shadow:none;
+}
+.field .reveal:active{transform:none;box-shadow:none;}
+
 input[type=file]{
   padding:18px;
   border:2px dashed var(--ink);border-radius:16px;
@@ -325,6 +337,7 @@ body.center-page .site-head{max-width:470px;}
 .center-page h1{font-size:29px;font-weight:800;letter-spacing:-.035em;margin:22px 0 18px;text-align:center;}
 .center-page .card{max-width:none;text-align:left;}
 .center-page .card button{width:100%;}
+.center-page .card .field .reveal{width:auto;}
 .center-page .card p{color:var(--muted);font-size:13.5px;margin:0 0 14px;}
 .center-page .card a:not(.link){
   display:inline-block;margin-top:6px;background:var(--lime);color:var(--ink);
