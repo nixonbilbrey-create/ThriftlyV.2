@@ -27,7 +27,9 @@ const MAX_UNCOMPRESSED = 25 * 1024 * 1024;
 const MAX_INFLATED_TOTAL = 48 * 1024 * 1024;
 const MAX_CANDIDATES = 8;
 const MAX_SVG_SIDE = 8000;
-const MAX_SVG_BYTES = 16384;
+const MAX_TAG_BYTES = 8192;
+const SVG_TAG = Buffer.from('<svg');
+const HEIC_TAG = Buffer.from('ftyp');
 
 // HEIC is what iPhones shoot by default and this sharp build has libheif for AVIF
 // only — HEVC decoding is absent — so it has to be named before sharp sees it.
@@ -43,13 +45,14 @@ function sniff(buffer) {
   if (buffer[0] === 0x7f && buffer.toString('ascii', 1, 4) === 'ELF') return 'executable';
   if ([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe].includes(buffer.readUInt32BE(0))) return 'executable';
   if (buffer[0] === 0x23 && buffer[1] === 0x21) return 'executable'; // #! script
-  if (buffer.toString('ascii', 4, 8) === 'ftyp' && HEIF_BRANDS.has(buffer.toString('ascii', 8, 12).toLowerCase())) return 'heic';
+  if (buffer.subarray(4, 8).equals(HEIC_TAG) && HEIF_BRANDS.has(buffer.toString('ascii', 8, 12).toLowerCase())) return 'heic';
   if (buffer.toString('ascii', 0, 4) === '%PDF') return 'pdf';
   if (buffer[0] === 0x50 && buffer[1] === 0x4b) return 'zip';
   if (buffer[0] === 0xd0 && buffer[1] === 0xcf && buffer[2] === 0x11 && buffer[3] === 0xe0) return 'ole';
-  // Checked before sharp sees it: an SVG has to be inspected before rasterising,
-  // because rasterising is where it could reach outside itself.
-  if (buffer.subarray(0, MAX_SVG_BYTES).toString('utf8').toLowerCase().includes('<svg')) return 'svg';
+  // The whole file, not a window: any amount of comments can precede the tag, and
+  // an enormous declared size makes metadata() throw before it can report a
+  // format. A byte search costs nothing next to rasterising.
+  if (buffer.includes(SVG_TAG)) return 'svg';
   return 'other';
 }
 
@@ -183,24 +186,44 @@ async function zipImages(buffer) {
 const SVG_REFERENCE_RE = /(?:xlink:href|href|src)\s*=\s*["']([^"']*)["']/gi;
 const SVG_CSS_URL_RE = /url\(\s*["']?([^"')]*)["']?\s*\)/gi;
 
-function svgProblem(buffer) {
-  const text = buffer.subarray(0, MAX_SVG_BYTES).toString('utf8');
-  if (/<script|<!entity/i.test(text)) return 'unsafe-svg';
-  for (const match of [...text.matchAll(SVG_REFERENCE_RE), ...text.matchAll(SVG_CSS_URL_RE)]) {
-    const target = match[1].trim();
-    if (target && !target.startsWith('#')) return 'unsafe-svg';
+// End of the opening <svg ...> tag, respecting quoted attribute values (a path or
+// a style can contain '>'). Refuses an absurdly long tag rather than scanning on.
+function svgTagEnd(text, start) {
+  let quote = null;
+  for (let i = start; i < text.length && i - start <= MAX_TAG_BYTES; i++) {
+    const ch = text[i];
+    if (quote) { if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '>') return i + 1;
   }
-  const tag = text.match(/<svg\b[^>]*>/i);
-  if (!tag) return null;
+  return -1;
+}
+
+// Reads the whole file: a comment can be any length, so checking only the first
+// few KB would let a padded SVG past the reference, script and size rules.
+function svgProblem(buffer) {
+  const text = buffer.toString('utf8');
+  if (/<script|<!entity/i.test(text)) return 'unsafe-svg';
+  for (const pattern of [SVG_REFERENCE_RE, SVG_CSS_URL_RE]) {
+    for (const match of text.matchAll(pattern)) {
+      const target = match[1].trim();
+      if (target && !target.startsWith('#')) return 'unsafe-svg';
+    }
+  }
+  const start = text.search(/<svg\b/i);
+  if (start === -1) return 'unreadable';
+  const end = svgTagEnd(text, start);
+  if (end === -1) return 'unreadable';
+  const tag = text.slice(start, end);
   const attr = (name) => {
-    const found = tag[0].match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'));
+    const found = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'));
     return found ? parseFloat(found[1]) : NaN;
   };
   const width = attr('width');
   const height = attr('height');
   if (width > MAX_SVG_SIDE || height > MAX_SVG_SIDE) return 'too-large';
   if (width > 0 && height > 0 && width * height > MAX_PIXELS) return 'too-large';
-  const box = tag[0].match(/\bviewBox\s*=\s*["']([^"']+)["']/i);
+  const box = tag.match(/\bviewBox\s*=\s*["']([^"']+)["']/i);
   if (box) {
     const parts = box[1].trim().split(/[\s,]+/).map(Number);
     if (parts.length === 4 && parts[2] * parts[3] > MAX_PIXELS) return 'too-large';
@@ -214,6 +237,18 @@ function rasterizeSvg(buffer) {
   return sharp(buffer, { density: 96, limitInputPixels: MAX_PIXELS }).png().toBuffer();
 }
 
+// Every SVG path ends here — whether the sniff spotted it or sharp did — so the
+// guards cannot be skipped by which branch recognised the file.
+async function extractSvg(buffer) {
+  const problem = svgProblem(buffer);
+  if (problem) return { ok: false, reason: problem, kind: 'svg' };
+  try {
+    return { ok: true, buffer: await rasterizeSvg(buffer), kind: 'svg' };
+  } catch {
+    return { ok: false, reason: 'unreadable', kind: 'svg' };
+  }
+}
+
 // ---------- public entry point ----------
 // ok:true  -> { buffer } is a raster image the rest of the pipeline understands
 // ok:false -> reason names why, so the route can say something useful
@@ -225,15 +260,7 @@ async function extractOne(buffer) {
   if (kind === 'executable') return fail('executable');
   if (kind === 'ole') return fail('legacy');
 
-  if (kind === 'svg') {
-    const problem = svgProblem(buffer);
-    if (problem) return fail(problem);
-    try {
-      return { ok: true, buffer: await rasterizeSvg(buffer), kind };
-    } catch {
-      return fail('unreadable');
-    }
-  }
+  if (kind === 'svg') return extractSvg(buffer);
 
   if (kind === 'pdf' || kind === 'zip') {
     const found = kind === 'pdf' ? await pdfImages(buffer) : await zipImages(buffer);
@@ -241,9 +268,12 @@ async function extractOne(buffer) {
     return fail(found.tooLarge ? 'too-large' : 'no-image');
   }
 
-  // 'other': let sharp decide whether it is an image at all.
+  // 'other': let sharp decide what the file is. Its format report is authoritative
+  // — a padded SVG that the sniff couldn't see is still an SVG and must take the
+  // guarded path, not the generic image one.
   try {
     const meta = await sharp(buffer).metadata();
+    if (meta.format === 'svg') return extractSvg(buffer);
     if (!meta.width || !meta.height) return fail('no-image');
     if (meta.width * meta.height > MAX_PIXELS) return fail('too-large');
     return { ok: true, buffer, kind: 'image' };

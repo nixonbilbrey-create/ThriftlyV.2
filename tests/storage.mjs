@@ -722,6 +722,32 @@ async function maliciousUploadFlow(token) {
     const pulled = await upload(remoteSvg, 'image/svg+xml', 'remote.svg');
     assert.equal(pulled.res.status, 415, 'an SVG that references a URL is refused');
     assert.equal(hits.count, 0, 'and nothing was fetched from that URL');
+
+    // Padding: more than the 16 KB sniff window of comments before the tag. The
+    // sniff sees nothing, sharp still reports svg, and the same rules must apply —
+    // otherwise a comment is all it takes to reach the rasteriser unchecked.
+    const padding = `<!-- ${'x'.repeat(20000)} -->`;
+    const paddedRef = Buffer.from(`${padding}<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image href="http://127.0.0.1:${leak.address().port}/padded.png" width="10" height="10"/></svg>`);
+    const padded = await upload(paddedRef, 'image/svg+xml', 'padded.svg');
+    assert.equal(padded.res.status, 415, 'an SVG padded past the sniff window is refused too');
+    assert.equal(hits.count, 0, 'and the padded file fetched nothing either');
+
+    const paddedHuge = Buffer.from(`${padding}<svg xmlns="http://www.w3.org/2000/svg" width="200000" height="200000"><rect width="10" height="10"/></svg>`);
+    const paddedSize = await upload(paddedHuge, 'image/svg+xml', 'padded-huge.svg');
+    assert.equal(paddedSize.res.status, 415, 'padding does not hide an oversized SVG');
+    assert.match(paddedSize.body.error || '', /too large|40 megapixels/i, 'and the size is still named');
+
+    const paddedOk = Buffer.from(`${padding}<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12" fill="#abcdef"/></svg>`);
+    const paddedSticker = await upload(paddedOk, 'image/svg+xml', 'padded-ok.svg');
+    assert.equal(paddedSticker.res.status, 201, 'a harmless padded SVG still scans, so the guard is not a blanket ban');
+
+    // A gzipped SVG (.svgz) has no literal "<svg" bytes at all, so only sharp's
+    // format report can catch it. It must take the guarded path, not the generic
+    // image one.
+    const svgz = zlib.gzipSync(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image href="http://127.0.0.1:${leak.address().port}/gz.png"/></svg>`));
+    const gzUpload = await upload(svgz, 'image/svg+xml', 'remote.svgz');
+    assert.equal(gzUpload.res.status, 415, 'a gzipped SVG takes the guarded path, not the generic one');
+    assert.equal(hits.count, 0, 'and it fetched nothing either');
   } finally {
     await new Promise((resolve) => leak.close(resolve));
   }
@@ -759,7 +785,7 @@ async function maliciousUploadFlow(token) {
   assert.equal(bytes[0], 0xff, 'the served file is the re-encoded jpeg');
   assert.ok(!bytes.includes(Buffer.from('<script')), 'the appended markup did not survive storage');
 
-  assert.equal((await listDrafts()).length, before.length + 1, 'only the genuine image created a draft');
+  assert.equal((await listDrafts()).length, before.length + 2, 'only the genuine images (the polyglot and the padded sticker) created drafts');
   for (const draft of await listDrafts()) {
     if (before.some((old) => old.id === draft.id)) continue;
     await fetch(`${BASE}/api/drafts/${draft.id}`, { method: 'DELETE', headers: authHeaders(token) });
