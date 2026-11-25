@@ -19,8 +19,8 @@
   <h1>Privacy Policy</h1>
   <p class="lead">This policy explains exactly what Thriftly does with your data — in plain language. It's short on purpose.</p>
   <div class="card">
-    <span class="version">Version 2026-11-24b</span>
-    <p style="font-size:13px;"><b>Last updated:</b> November 24, 2026 (revision b: retention and backup wording corrected). Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
+    <span class="version">Version 2026-11-25</span>
+    <p style="font-size:13px;"><b>Last updated:</b> November 25, 2026 (documents are accepted as a source of the image; the original file is not stored). Creating an account requires agreeing to this policy, and each account records which version it agreed to. Continued use after a revision means you accept the updated version; the version above changes with every revision.</p>
 
     <h2>Who runs Thriftly</h2>
     <p>Thriftly is a small app for people reselling secondhand items: you photograph something, the software identifies it, suggests a price and drafts listings for resale platforms. The operator is the person or entity that hosts the copy of Thriftly you're signing up on.</p>
@@ -32,13 +32,15 @@
       <tr><td>Password</td><td>Logging in</td><td>Only a bcrypt hash — we never see or store your actual password</td></tr>
       <tr><td>Privacy Policy agreement</td><td>Proof of consent</td><td>Policy version + timestamp recorded when you sign up</td></tr>
       <tr><td>Your Gemini API key</td><td>So scans and listing generation run on <b>your own</b> Google account, not the operator's</td><td>Encrypted at rest (AES-256-GCM) with a server-side key</td></tr>
-      <tr><td>Photos you upload</td><td>Saved with your item drafts so you can recognize them later</td><td>Resized image files in the operator's private storage — the server's disk or a private object-storage bucket (never in the database, never in a public bucket)</td></tr>
+      <tr><td>Photos you upload — or the image inside a document</td><td>Saved with your item drafts so you can recognize them later</td><td>Resized image files in the operator's private storage — the server's disk or a private object-storage bucket (never in the database, never in a public bucket). The original document is read in memory, never saved</td></tr>
       <tr><td>Drafts and generated listings</td><td>The app's core feature</td><td>Database on the operator's server, tied to your account</td></tr>
       <tr><td>Session + verification tokens</td><td>Keeping you logged in; email verification and password reset</td><td>Database rows; expired ones purged regularly</td></tr>
     </table>
 
+    <p>If you upload a document rather than a photo — a PDF, a Word, PowerPoint or Excel file, an OpenDocument file, an EPUB or a zip — Thriftly looks for the image inside it, and that image is what gets stored and sent to Google. The document itself is processed in memory and never written to storage.</p>
+
     <h2>What happens to your photos and text at Google</h2>
-    <p><b>Plainly:</b> when you scan an item or generate a listing, the photo you uploaded and the text around it — your notes, the instructions sent to the model, and the listings it writes back — go to Google's Gemini API on <b>your own API key</b>. From that point Google handles them under <b>its</b> terms, not this page's, and on the free tier those terms are broad.</p>
+    <p><b>Plainly:</b> when you scan an item or generate a listing, the photo you uploaded (or the image taken from the document you uploaded) and the text around it — your notes, the instructions sent to the model, and the listings it writes back — go to Google's Gemini API on <b>your own API key</b>. From that point Google handles them under <b>its</b> terms, not this page's, and on the free tier those terms are broad.</p>
     <p>If your key is on Gemini's <b>free tier</b> — the default, with no billing enabled — Google's terms say it uses the content you submit (your photos and text) and the responses it generates to <i>provide, improve and develop Google products and services and machine learning technologies</i>. Google also states that <b>human reviewers may read, annotate and process that input and output</b> to improve quality, with the data disconnected from your account and API key before they see it. Google's own advice for that tier is blunt: don't submit sensitive, confidential or personal information.</p>
     <p>In practice, for a reselling app, that means:</p>
     <ul>

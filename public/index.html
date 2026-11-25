@@ -73,9 +73,13 @@
 
     <main>
       <div>
+        <p class="scan-hint">A photo, or any file with one inside — PDF, Word, PowerPoint, Excel, zip, SVG.</p>
         <input type="file" accept="image/*" capture="environment" id="fileInput">
+        <button class="secondary mini" id="anyFileBtn" type="button" style="margin:2px 0 0;">Or pick any file…</button>
+        <input type="file" id="anyFileInput" accept="*/*" hidden>
+        <div id="fileMeta" class="file-meta" style="display:none;"></div>
         <img id="preview" alt="">
-        <button id="scanBtn" disabled>Scan photo</button>
+        <button id="scanBtn" disabled>Scan for price</button>
         <div id="analysisBox" style="margin-top:14px;"></div>
 
         <button id="genBtn" style="display:none;margin-top:12px;">Generate listings</button>
@@ -488,13 +492,33 @@
     });
 
     // ---------- scan / generate ----------
-    document.getElementById('fileInput').addEventListener('change', e => {
-      file = e.target.files[0];
-      if (!file) return;
+    // Two pickers feed one file: the camera one keeps iPhone photo capture, the
+    // second takes any file at all — the server looks inside it for a photo.
+    function setPickedFile(f) {
+      file = f;
       const preview = document.getElementById('preview');
-      preview.src = URL.createObjectURL(file);
-      preview.classList.add('display');
+      const meta = document.getElementById('fileMeta');
+      const isImage = /^image\//i.test(f.type) || /\.(jpe?g|png|gif|webp|avif|bmp|tiff?)$/i.test(f.name);
+      if (preview.dataset.url) URL.revokeObjectURL(preview.dataset.url);
+      if (isImage) {
+        preview.src = URL.createObjectURL(f);
+        preview.dataset.url = preview.src;
+        preview.classList.add('display');
+        meta.style.display = 'none';
+      } else {
+        preview.removeAttribute('src');
+        preview.classList.remove('display');
+        meta.style.display = 'block';
+        meta.textContent = f.name + ' · ' + (f.size / 1024 / 1024).toFixed(1) + ' MB — Thriftly will look inside this file for a photo';
+      }
       document.getElementById('scanBtn').disabled = false;
+    }
+    document.getElementById('fileInput').addEventListener('change', e => {
+      if (e.target.files[0]) setPickedFile(e.target.files[0]);
+    });
+    document.getElementById('anyFileBtn').addEventListener('click', () => document.getElementById('anyFileInput').click());
+    document.getElementById('anyFileInput').addEventListener('change', e => {
+      if (e.target.files[0]) setPickedFile(e.target.files[0]);
     });
 
     // iPhone photos arrive as HEIC, which the server's sharp build cannot decode
@@ -522,12 +546,18 @@
       btn.disabled = true; btn.textContent = 'Scanning…';
       const analysisBox = document.getElementById('analysisBox');
       analysisBox.innerHTML = skeletonAnalysis();
+      if (file && file.size > 12 * 1024 * 1024) {
+        analysisBox.innerHTML = '<div class="err">That file is ' + (file.size / 1024 / 1024).toFixed(1) +
+          ' MB — the limit is 12 MB. Try a smaller file, or a JPEG of the photo.</div>';
+        btn.disabled = false; btn.textContent = 'Scan for price';
+        return;
+      }
       let upload;
       try {
         upload = await normalizePhoto(file);
       } catch (err) {
         analysisBox.innerHTML = '<pre>' + esc(err.message) + '</pre>';
-        btn.disabled = false; btn.textContent = 'Scan photo';
+        btn.disabled = false; btn.textContent = 'Scan for price';
         return;
       }
       const fd = new FormData();
@@ -535,7 +565,12 @@
       try {
         const res = await api('/api/scan', { method: 'POST', body: fd });
         const data = await res.json();
-        if (!res.ok) { analysisBox.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>'; return; }
+        if (!res.ok) {
+          analysisBox.innerHTML = data.error
+            ? '<div class="err">' + esc(data.error) + '</div>'
+            : '<pre>' + esc(JSON.stringify(data, null, 2)) + '</pre>';
+          return;
+        }
         current = data;
         renderAnalysis();
         renderListings();
@@ -543,7 +578,7 @@
       } catch (err) {
         analysisBox.innerHTML = '<pre>Request failed: ' + esc(String(err)) + '</pre>';
       } finally {
-        btn.disabled = false; btn.textContent = 'Scan photo';
+        btn.disabled = false; btn.textContent = 'Scan for price';
       }
     });
 

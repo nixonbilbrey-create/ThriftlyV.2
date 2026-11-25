@@ -139,7 +139,12 @@ This is a real, working multi-user system, but it's a starter one. Specifically:
   first (`photos.js` → `shrink()`): longest edge capped at 1400 px, re-encoded
   as JPEG q82, EXIF orientation auto-applied — and that single normalized
   image is both what Gemini sees and what's stored; the original is never
-  kept. iPhone HEIC photos are re-encoded to JPEG in the browser before upload,
+  kept. Uploads don't have to be photos: `extract.js` looks inside PDFs, the
+  zip-based formats (docx, xlsx, pptx, odt, epub, plain zip), SVG and the common
+  raster formats for the largest decodable image, so a listing can start from a
+  receipt or a document. Only the extracted image is stored and sent to Gemini —
+  the container itself is processed in memory and discarded.
+  iPhone HEIC photos are re-encoded to JPEG in the browser before upload,
   because this image pipeline (`sharp`'s prebuilt libvips) has no HEVC decoder; a
   HEIC that reaches the API anyway is refused with instructions, not a vague error.
   They're served without auth over unguessable 128-bit random ids,

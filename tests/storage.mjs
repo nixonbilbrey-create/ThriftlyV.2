@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
 import sharp from 'sharp';
 import photosModule from '../photos.js';
 
@@ -215,6 +216,112 @@ function photoForm(bytes) {
   const form = new FormData();
   form.append('photo', new Blob([bytes], { type: 'image/jpeg' }), 'item.jpg');
   return form;
+}
+
+// A zip with stored (uncompressed) members — enough of the format for the
+// extractor's central-directory reader, and no dependency to build.
+function makeZip(files) {
+  const parts = [];
+  const centrals = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(file.name, 'utf8');
+    const size = file.data.length;
+    // Real docx/xlsx members are deflated; exercise both storage methods.
+    const payload = file.deflate ? zlib.deflateRawSync(file.data) : file.data;
+    const method = file.deflate ? 8 : 0;
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(size, 22);
+    local.writeUInt16LE(name.length, 26);
+    name.copy(local, 30);
+
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(payload.length, 20);
+    central.writeUInt32LE(size, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    name.copy(central, 46);
+
+    parts.push(local, payload);
+    centrals.push(central);
+    offset += local.length + payload.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, directory, end]);
+}
+
+// ---------- the photo hiding inside another file ----------
+// A PDF with an embedded JPEG, a docx-style zip with a PNG, and an SVG all have
+// to reach the same pipeline as a plain photo; a file with no image in it has to
+// say so instead of failing somewhere deeper.
+async function containerImageFlow(storage, token) {
+  const listDrafts = async () => json(await fetch(`${BASE}/api/drafts`, { headers: authHeaders(token) }));
+  const before = await listDrafts();
+
+  const upload = async (bytes, type, name) => {
+    const form = new FormData();
+    form.append('photo', new Blob([bytes], { type }), name);
+    const res = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form });
+    return { res, body: await json(res) };
+  };
+  const storedMeta = async (thumb) => sharp(storage.objects.get(thumb.split('/').pop()).bytes).metadata();
+
+  const jpeg = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#335577' } }).jpeg().toBuffer();
+  const png = await sharp({ create: { width: 640, height: 480, channels: 3, background: '#c8f53c' } }).png().toBuffer();
+
+  // PDF: the photo is an FF D8 … FF D9 stream between the object markers.
+  const pdf = Buffer.concat([
+    Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image /Filter /DCTDecode >>\nstream\n'),
+    jpeg,
+    Buffer.from('\nendstream\nendobj\n%%EOF\n'),
+  ]);
+  const fromPdf = await upload(pdf, 'application/pdf', 'receipt.pdf');
+  assert.equal(fromPdf.res.status, 201, `a PDF with a photo scans -> ${fromPdf.res.status} ${JSON.stringify(fromPdf.body)}`);
+  assert.match(fromPdf.body.thumb, /^\/api\/photos\/[a-f0-9]{32}\.jpg$/, 'the photo found in the PDF becomes the draft thumb');
+  const pdfMeta = await storedMeta(fromPdf.body.thumb);
+  assert.equal(pdfMeta.format, 'jpeg', 'and is stored as a normalised jpeg');
+
+  // Word/PowerPoint/Excel/EPUB are zips with media inside.
+  const docx = makeZip([
+    { name: 'word/document.xml', data: Buffer.from('<w:document/>') },
+    { name: 'word/media/image1.png', data: png, deflate: true },
+  ]);
+  const fromDocx = await upload(docx, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'listing.docx');
+  assert.equal(fromDocx.res.status, 201, `a docx with a photo scans -> ${fromDocx.res.status} ${JSON.stringify(fromDocx.body)}`);
+  const docxMeta = await storedMeta(fromDocx.body.thumb);
+  assert.equal(docxMeta.format, 'jpeg', 'the image pulled out of the zip is normalised like any photo');
+
+  // SVG is an image, just not a raster one.
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><rect width="300" height="200" fill="#ff5522"/></svg>');
+  const fromSvg = await upload(svg, 'image/svg+xml', 'sticker.svg');
+  assert.equal(fromSvg.res.status, 201, `an SVG scans -> ${fromSvg.res.status} ${JSON.stringify(fromSvg.body)}`);
+
+  // Nothing to find: a zip of text, and a plain text file.
+  const emptyZip = await upload(makeZip([{ name: 'readme.txt', data: Buffer.from('hi') }]), 'application/zip', 'archive.zip');
+  assert.equal(emptyZip.res.status, 415, 'a zip with no images is refused');
+  assert.match(emptyZip.body.error || '', /No image found/, 'and says no image was found');
+
+  assert.equal((await listDrafts()).length, before.length + 3, 'each successful scan created exactly one draft');
+
+  for (const draft of await listDrafts()) {
+    if (before.some((old) => old.id === draft.id)) continue;
+    await fetch(`${BASE}/api/drafts/${draft.id}`, { method: 'DELETE', headers: authHeaders(token) });
+  }
+  assert.equal((await listDrafts()).length, before.length, 'cleanup left the draft list as it was');
 }
 
 // ---------- the TTL guard ----------
@@ -537,13 +644,13 @@ async function heicRejectionFlow(token) {
   assert.equal(octetRes.status, 415, 'a HEIC sent as application/octet-stream is refused as HEIC');
   assert.match((await json(octetRes)).error || '', /HEIC/i, 'and still names HEIC, not the content type');
 
-  // The converse, so the sniff can't swallow genuinely unsupported input: a
-  // non-image keeps the plain 400 and never reaches the image pipeline.
+  // The converse, so the sniff can't swallow genuinely unsupported input: text
+  // with no picture in it is refused, and says what was looked for.
   const notAnImage = new FormData();
   notAnImage.append('photo', new Blob([Buffer.from('just some text')], { type: 'text/plain' }), 'notes.txt');
   const plain = await fetch(`${BASE}/api/scan`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: notAnImage });
-  assert.equal(plain.status, 400, 'a non-image is a 400, not a HEIC message and not a 500');
-  assert.match((await json(plain)).error || '', /Unsupported image type/, 'and says so plainly');
+  assert.equal(plain.status, 415, 'a file with no image is unsupported media, not a HEIC message and not a 500');
+  assert.match((await json(plain)).error || '', /No image found/, 'and says plainly that no image was found');
 
   assert.equal(await draftCount(), before, 'a refused upload leaves no draft behind');
 }
@@ -742,6 +849,10 @@ try {
   step = Date.now();
   await heicRejectionFlow(token);
   console.log(`  ok   HEIC refused with instructions, mislabelled ones sniffed too (${Date.now() - step}ms)`);
+
+  step = Date.now();
+  await containerImageFlow(storage, token);
+  console.log(`  ok   photo hidden in a PDF, docx zip and SVG is found and scanned (${Date.now() - step}ms)`);
 
   step = Date.now();
   await readinessProvesBucket(storage);

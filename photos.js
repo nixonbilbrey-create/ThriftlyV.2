@@ -19,6 +19,7 @@ const JPEG_QUALITY = 82;
 async function shrink(buffer) {
   const normalized = await sharp(buffer)
     .rotate() // auto-applies EXIF orientation so sideways phone photos stay upright
+    .flatten({ background: '#ffffff' }) // transparent PNGs get paper, not black
     .resize({
       width: MAX_EDGE,
       height: MAX_EDGE,

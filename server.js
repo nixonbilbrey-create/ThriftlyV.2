@@ -31,7 +31,8 @@ const {
   SESSION_TTL_MS, EMAIL_VERIFICATION_TTL_MS, PASSWORD_RESET_TTL_MS, hashPassword, verifyPassword, DUMMY_HASH, newToken, encrypt, decrypt, requireAuth,
 } = require('./auth');
 const { sendVerificationEmail, sendPasswordResetEmail, smtpConfigured } = require('./mailer');
-const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage, looksLikeHeic } = require('./photos');
+const { shrink, savePhoto, readPhoto, deletePhoto, photoIdFromThumb, storageEnabled, checkStorage } = require('./photos');
+const { extractImage } = require('./extract');
 const { runBackup } = require('./backup');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const {
@@ -64,7 +65,7 @@ console.log(REQUIRE_EMAIL_VERIFICATION
 // Must match the version rendered in public/privacy.html: the smoke test fails if
 // the served page and this constant disagree. Bump both together — every signup
 // records it and /api/auth/me reports it back.
-const PRIVACY_VERSION = '2026-11-24b';
+const PRIVACY_VERSION = '2026-11-25';
 
 const app = express();
 // The app always runs behind a TLS-terminating proxy in production (Render,
@@ -73,7 +74,10 @@ const app = express();
 // without it express-rate-limit 8 hard-errors on forwarded requests
 // (ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
 app.set('trust proxy', 1);
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+// 12 MB: photos are normally a few MB, but a PDF or a zip with a product shot in
+// it is routinely bigger, and the whole file has to be in memory to look inside.
+const UPLOAD_LIMIT_MB = 12;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: UPLOAD_LIMIT_MB * 1024 * 1024 } });
 // ---------- baseline security headers ----------
 // Registered FIRST so static file responses get them too. Kept explicit rather
 // than pulled in via helmet: the app renders inline scripts, so its CSP must
@@ -520,26 +524,29 @@ app.post('/api/scan', auth, scanLimiter, upload.single('photo'), async (req, res
       'That looks like an iPhone HEIC photo, which Thriftly can\'t read directly. ' +
       'On the iPhone: Settings → Camera → Formats → Most Compatible, then retake it — ' +
       'or open Photos, share/export the photo as JPEG and upload that.';
-    // Signature before the declared type: a HEIC uploaded as image/heic, as
-    // image/jpeg, or as application/octet-stream (some clients label uploads
-    // that way) should all get the same instruction rather than "unsupported
-    // image type: application/octet-stream".
-    if (looksLikeHeic(req.file.buffer)) return res.status(415).json({ error: heicMessage });
-
-    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (!allowed.includes(req.file.mimetype)) {
-      return res.status(400).json({
-        error: `Unsupported image type: ${req.file.mimetype}. Use jpeg, png, gif, or webp.`,
-      });
+    // Whatever was sent — a photo, a PDF, a Word/PowerPoint/Excel file, an EPUB, a
+    // zip, an SVG — find the photo inside it. Addressing the bytes rather than the
+    // declared MIME type is what lets a HEIC sent as application/octet-stream get
+    // the HEIC instruction instead of a generic type complaint.
+    const found = await extractImage(req.file.buffer);
+    if (!found.ok && found.reason === 'heic') return res.status(415).json({ error: heicMessage });
+    if (!found.ok) {
+      const named = req.file.originalname ? ` "${req.file.originalname}"` : '';
+      const error = found.reason === 'legacy'
+        ? `That looks like an older Office file (Word/Excel 97-2003)${named}. Save it as .docx or .xlsx, or export it as a PDF, and try again.`
+        : found.reason === 'unreadable'
+          ? `Thriftly found something image-like in${named || ' that file'} but couldn't read it. Try a JPEG or PNG of it.`
+          : `No image found in${named || ' that file'}. Thriftly needs a photo — upload one directly, or a PDF, Word, PowerPoint, Excel, OpenDocument, EPUB or zip file that contains one.`;
+      return res.status(415).json({ error });
     }
 
     // One resize pass serves both consumers: the (smaller) same image goes to
-    // Gemini and to disk. The upload never survives in full size.
+    // Gemini and to disk. The original file is never stored.
     let normalized;
     try {
-      normalized = await shrink(req.file.buffer);
+      normalized = await shrink(found.buffer);
     } catch (err) {
-      const bad = new Error('That file couldn\'t be read as an image — try a jpg, png, gif, or webp.');
+      const bad = new Error('That file contains an image Thriftly couldn\'t read — try a JPEG or PNG of it.');
       bad.status = 400;
       throw bad;
     }
@@ -663,6 +670,16 @@ app.get('/api/ready', async (_req, res) => {
 // in the server log and 4xx messages client-actionable.
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
+  // Multer rejects oversized uploads before any route runs; without this it would
+  // surface as a generic 500 with none of the size limit in it.
+  if (err && err.name === 'MulterError') {
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    return res.status(tooBig ? 413 : 400).json({
+      error: tooBig
+        ? `That file is over ${UPLOAD_LIMIT_MB} MB. Try a smaller file, or a JPEG of the photo.`
+        : `Upload failed: ${err.message}`,
+    });
+  }
   sendError(res, err);
 });
 
