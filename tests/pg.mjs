@@ -62,7 +62,7 @@ async function main() {
     initDb, publicUser,
     createUser, getUserById, getUserByEmail, markUserVerified, setUserGeminiKey, clearUserGeminiKey,
     setUserPasswordHash, setUserConsent, deleteUserRow,
-    createSession, getSession, deleteSession, cleanupExpiredSessions, deleteSessionsForUser,
+    createSession, getSession, getSessionUser, deleteSession, cleanupExpiredSessions, deleteSessionsForUser,
     createEmailVerification, getEmailVerification, deleteEmailVerificationsForUser,
     createPasswordReset, getPasswordReset, deletePasswordResetsForUser,
     listDrafts, getDraft, createDraft, updateDraft, deleteDraft, clearDrafts, runCleanup,
@@ -110,6 +110,12 @@ async function main() {
     assert.equal(session.user_id, user.id);
     assert.equal(Number(session.expires_at), sessionExpiry);
 
+    // This is the query requireAuth uses on every authenticated request: one
+    // join must return the user row, and expiry must be enforced in SQL.
+    const sessionUser = await getSessionUser(db, 'pg-session');
+    assert.equal(sessionUser.id, user.id, 'session+user join returns the owner');
+    assert.equal(sessionUser.email, user.email, 'join returns user columns, not session columns');
+
     await createEmailVerification(db, { token: 'pg-verify', userId: user.id, expiresAt: sessionExpiry });
     assert.equal((await getEmailVerification(db, 'pg-verify')).user_id, user.id);
     await deleteEmailVerificationsForUser(db, user.id);
@@ -146,6 +152,7 @@ async function main() {
       consentVersion: '2026-11-18', consentAt: 1,
     });
     await createSession(db, { token: 'pg-expired-session', userId: expiredUser.id, expiresAt: Date.now() - 1000 });
+    assert.equal(await getSessionUser(db, 'pg-expired-session'), null, 'expired sessions must not authenticate');
     await createEmailVerification(db, { token: 'pg-expired-verify', userId: expiredUser.id, expiresAt: Date.now() - 1000 });
     await createPasswordReset(db, { token: 'pg-expired-reset', userId: expiredUser.id, expiresAt: Date.now() - 1000 });
     await cleanupExpiredSessions(db);
